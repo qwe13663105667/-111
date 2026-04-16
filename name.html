@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Gitee AI 图片编辑 (比例自适应+双图参考版)</title>
+<style>
+  *{box-sizing:border-box;font-family:system-ui,sans-serif}
+  body{margin:0;padding:20px;background:#111;color:#fff}
+  .container{max-width:1200px;margin:0 auto;display:grid;gap:16px}
+  .card{background:#222;border-radius:12px;padding:16px}
+  .flex{display:flex;gap:16px;flex-wrap:wrap}
+  .col{flex:1;min-width:280px}
+  input,textarea,select{width:100%;padding:10px;border-radius:8px;border:none;background:#333;color:#fff;margin-bottom:10px}
+  button{width:100%;padding:10px;border-radius:8px;border:0;background:#0099ff;color:#fff;font-weight:bold;cursor:pointer;margin-top:5px}
+  button:disabled{background:#666;cursor:not-allowed}
+  .canvas-wrap{position:relative;width:100%;max-width:450px;background:#000;border-radius:8px;overflow:hidden;margin:0 auto}
+  canvas{position:absolute;left:0;top:0;width:100%;height:100%}
+  #maskCanvas{pointer-events:none}
+  .img-preview{max-width:100%;border-radius:8px;margin-top:10px;display:block;border:2px solid #444}
+  .tip{font-size:12px;color:#888;margin-top:5px}
+  .two-img-row{display:flex;gap:12px;flex-wrap:wrap}
+  .img-item{flex:1;min-width:200px}
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="card">
+    <h3>Gitee AI 图片编辑 | 比例自适应 + 双图参考</h3>
+    
+    <label>API Key</label>
+    <input type="text" id="apiKey" value="">
+
+    <label>选择模型 (必选)</label>
+    <select id="modelSelect">
+      <option value="Qwen-Image-Edit" selected>Qwen-Image-Edit (人像推荐)</option>
+      <option value="nano-banana">nano-banana (谷歌)</option>
+    </select>
+
+    <label>提示词</label>
+    <textarea id="prompt" rows="3" placeholder="高质量，清晰，细节丰富，8k，写实"></textarea>
+  </div>
+
+  <div class="flex">
+    <div class="col card">
+      <h3>主图 + 涂抹编辑区域</h3>
+      <input type="file" id="fileInput" accept="image/*" style="background:#444">
+      <div class="canvas-wrap">
+        <canvas id="imgCanvas"></canvas>
+        <canvas id="maskCanvas"></canvas>
+      </div>
+      <button onclick="clearMask()">清空涂抹</button>
+    </div>
+
+    <div class="col card">
+      <h3>参考图（第二张参考素材）</h3>
+      <input type="file" id="refFileInput" accept="image/*" style="background:#444">
+      <div class="canvas-wrap" style="aspect-ratio:1/1;">
+        <canvas id="refCanvas"></canvas>
+      </div>
+      <p class="tip">上传参考图用于风格/构图/人物参考</p>
+    </div>
+
+    <div class="col card">
+      <h3>生成结果</h3>
+      <button id="generateBtn" onclick="doEdit()">开始生成</button>
+      <button onclick="downloadResult()" style="background:#28a745">⬇ 下载图片</button>
+      <p class="tip">💡 自动沿用原图比例生成</p>
+      <img id="result" class="img-preview" alt="生成结果">
+    </div>
+  </div>
+</div>
+
+<script>
+const imgCanvas = document.getElementById('imgCanvas');
+const maskCanvas = document.getElementById('maskCanvas');
+const refCanvas = document.getElementById('refCanvas');
+const ctx = imgCanvas.getContext('2d');
+const mctx = maskCanvas.getContext('2d');
+const refCtx = refCanvas.getContext('2d');
+
+let currentImage = null;
+let refImage = null;
+let imgNaturalW = 0;
+let imgNaturalH = 0;
+let isDrawing = false;
+let currentBase64 = '';
+const MAX_SIZE = 1024;
+
+// 按原图比例设置画布
+function setCanvasSize(w, h) {
+  // 等比例压缩限制最大边长
+  let scale = 1;
+  if(w > MAX_SIZE || h > MAX_SIZE){
+    scale = MAX_SIZE / Math.max(w, h);
+  }
+  const cw = Math.round(w * scale);
+  const ch = Math.round(h * scale);
+
+  imgCanvas.width = cw;
+  imgCanvas.height = ch;
+  maskCanvas.width = cw;
+  maskCanvas.height = ch;
+  // 容器自适应比例
+  document.querySelector('.canvas-wrap').style.aspectRatio = `${cw}/${ch}`;
+}
+
+// 1. 主图上传
+document.getElementById('fileInput').addEventListener('change', function(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = function(ev) {
+    const img = new Image();
+    img.onload = function() {
+      currentImage = img;
+      imgNaturalW = img.width;
+      imgNaturalH = img.height;
+      setCanvasSize(img.width, img.height);
+      ctx.drawImage(img, 0, 0, imgCanvas.width, imgCanvas.height);
+      mctx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+    };
+    img.src = ev.target.result;
+  };
+  reader.readAsDataURL(file);
+});
+
+// 2. 参考图上传
+document.getElementById('refFileInput').addEventListener('change', function(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = function(ev) {
+    const img = new Image();
+    img.onload = function() {
+      refImage = img;
+      refCanvas.width = 512;
+      refCanvas.height = 512;
+      refCtx.clearRect(0,0,512,512);
+      refCtx.drawImage(img, 0, 0, 512, 512);
+    };
+    img.src = ev.target.result;
+  };
+  reader.readAsDataURL(file);
+});
+
+// 3. 涂抹绘制
+maskCanvas.addEventListener('mousedown', () => isDrawing = true);
+maskCanvas.addEventListener('mouseup', () => isDrawing = false);
+maskCanvas.addEventListener('mouseleave', () => isDrawing = false);
+maskCanvas.addEventListener('mousemove', (e) => {
+  if (!isDrawing) return;
+  const rect = maskCanvas.getBoundingClientRect();
+  const x = e.clientX - rect.left;
+  const y = e.clientY - rect.top;
+  mctx.beginPath();
+  mctx.arc(x, y, 18, 0, Math.PI * 2);
+  mctx.fillStyle = '#fff';
+  mctx.fill();
+});
+
+function clearMask() {
+  mctx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+}
+
+// 4. AI生成（携带主图+蒙版+参考图 + 原生比例尺寸）
+async function doEdit() {
+  const apiKey = document.getElementById('apiKey').value.trim();
+  const model = document.getElementById('modelSelect').value;
+  const prompt = document.getElementById('prompt').value.trim();
+  const btn = document.getElementById('generateBtn');
+  const resultImg = document.getElementById('result');
+
+  if (!currentImage) { alert('请先上传主图'); return; }
+  if (!prompt) { alert('请填写提示词'); return; }
+
+  btn.disabled = true;
+  btn.innerText = '生成中...';
+  resultImg.src = '';
+  currentBase64 = '';
+
+  try {
+    const imgBlob = await new Promise(res => imgCanvas.toBlob(res, 'image/png'));
+    const maskBlob = await new Promise(res => maskCanvas.toBlob(res, 'image/png'));
+
+    const form = new FormData();
+    form.append('model', model);
+    form.append('prompt', prompt);
+    form.append('image', imgBlob, 'image.png');
+    form.append('mask', maskBlob, 'mask.png');
+    // 携带参考图
+    if(refImage){
+      const refBlob = await new Promise(res => refCanvas.toBlob(res, 'image/png'));
+      form.append('reference_image', refBlob, 'reference.png');
+    }
+    form.append('n', 1);
+    // 使用原图实际比例尺寸
+    form.append('size', `${imgCanvas.width}x${imgCanvas.height}`);
+
+    const res = await fetch('https://ai.gitee.com/v1/images/edits', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiKey}` },
+      body: form
+    });
+
+    const json = await res.json();
+    console.log('返回数据:', json);
+
+    if (json.data?.[0]?.b64_json) {
+      currentBase64 = `data:image/png;base64,${json.data[0].b64_json}`;
+      resultImg.src = currentBase64;
+      alert('生成成功！');
+    } 
+    else if (json.data?.[0]?.url) {
+      const imgRes = await fetch(json.data[0].url);
+      const blob = await imgRes.blob();
+      currentBase64 = await new Promise(r => {
+        const reader = new FileReader();
+        reader.onload = e => r(e.target.result);
+        reader.readAsDataURL(blob);
+      });
+      resultImg.src = currentBase64;
+      alert('生成成功！');
+    } 
+    else {
+      alert('未能获取图片数据，请检查API Key或网络');
+    }
+  } catch (e) {
+    console.error('请求失败:', e);
+    alert('请求失败：' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.innerText = '开始生成';
+  }
+}
+
+// 5. 下载逻辑
+function downloadResult() {
+  if (!currentBase64) {
+    alert('请先生成图片');
+    return;
+  }
+  const link = document.createElement('a');
+  fetch(currentBase64)
+    .then(res => res.blob())
+    .then(blob => {
+      const blobUrl = URL.createObjectURL(blob);
+      link.href = blobUrl;
+      link.download = 'gitee-ai-edit.png';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(blobUrl);
+    })
+    .catch(() => {
+      link.href = currentBase64;
+      link.download = 'gitee-ai-edit.png';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    });
+}
+</script>
+</body>
+</html>
+
