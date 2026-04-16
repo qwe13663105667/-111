@@ -85,9 +85,9 @@ let isDrawing = false;
 let currentBase64 = '';
 const MAX_SIZE = 1024;
 
-// 🔧 替换为下午可用的全新稳定代理（修复Failed to fetch）
+// 🔧 已更换为corsproxy.io稳定代理（解决Failed to fetch）
 function getProxyUrl(targetUrl) {
-  return `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(targetUrl)}`;
+  return `https://corsproxy.io/?${encodeURIComponent(targetUrl)}`;
 }
 
 // 📱 修复触屏+鼠标双适配涂抹逻辑
@@ -291,9 +291,5 @@ function downloadResult() {
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
-    });
-}
-</script>
-</body>
-</html>
+   
 
