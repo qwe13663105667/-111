@@ -85,9 +85,9 @@ let isDrawing = false;
 let currentBase64 = '';
 const MAX_SIZE = 1024;
 
-// 🔧 稳定跨域代理（手机/电脑双兼容，彻底解决Failed to fetch）
+// 🔧 替换为下午可用的全新稳定代理（修复Failed to fetch）
 function getProxyUrl(targetUrl) {
-  return `https://api.allorigins.win/raw?url=${encodeURIComponent(targetUrl)}`;
+  return `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(targetUrl)}`;
 }
 
 // 📱 修复触屏+鼠标双适配涂抹逻辑
