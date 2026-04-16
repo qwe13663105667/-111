@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
 <title>Gitee AI 图片编辑 (比例自适应+双图参考版)</title>
 <style>
   *{box-sizing:border-box;font-family:system-ui,sans-serif}
@@ -16,11 +16,9 @@
   button:disabled{background:#666;cursor:not-allowed}
   .canvas-wrap{position:relative;width:100%;max-width:450px;background:#000;border-radius:8px;overflow:hidden;margin:0 auto}
   canvas{position:absolute;left:0;top:0;width:100%;height:100%}
-  #maskCanvas{pointer-events:none}
+  #maskCanvas{pointer-events:none;touch-action: none;}
   .img-preview{max-width:100%;border-radius:8px;margin-top:10px;display:block;border:2px solid #444}
   .tip{font-size:12px;color:#888;margin-top:5px}
-  .two-img-row{display:flex;gap:12px;flex-wrap:wrap}
-  .img-item{flex:1;min-width:200px}
 </style>
 </head>
 <body>
@@ -29,7 +27,7 @@
     <h3>Gitee AI 图片编辑 | 比例自适应 + 双图参考</h3>
     
     <label>API Key</label>
-    <input type="text" id="apiKey" value="">
+    <input type="text" id="apiKey" value="" placeholder="请输入你的Gitee API Key">
 
     <label>选择模型 (必选)</label>
     <select id="modelSelect">
@@ -87,9 +85,55 @@ let isDrawing = false;
 let currentBase64 = '';
 const MAX_SIZE = 1024;
 
+// 🔧 稳定跨域代理（手机/电脑双兼容，彻底解决Failed to fetch）
+function getProxyUrl(targetUrl) {
+  return `https://api.allorigins.win/raw?url=${encodeURIComponent(targetUrl)}`;
+}
+
+// 📱 修复触屏+鼠标双适配涂抹逻辑
+function getPos(e) {
+  const rect = maskCanvas.getBoundingClientRect();
+  const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+  const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+  return {
+    x: clientX - rect.left,
+    y: clientY - rect.top
+  };
+}
+
+// 绑定触屏事件
+maskCanvas.addEventListener('touchstart', (e) => {
+  e.preventDefault();
+  isDrawing = true;
+});
+maskCanvas.addEventListener('touchmove', (e) => {
+  if (!isDrawing) return;
+  e.preventDefault();
+  const pos = getPos(e);
+  mctx.beginPath();
+  mctx.arc(pos.x, pos.y, 20, 0, Math.PI * 2);
+  mctx.fillStyle = '#fff';
+  mctx.fill();
+});
+maskCanvas.addEventListener('touchend', () => {
+  isDrawing = false;
+});
+
+// 绑定鼠标事件
+maskCanvas.addEventListener('mousedown', () => isDrawing = true);
+maskCanvas.addEventListener('mouseup', () => isDrawing = false);
+maskCanvas.addEventListener('mouseleave', () => isDrawing = false);
+maskCanvas.addEventListener('mousemove', (e) => {
+  if (!isDrawing) return;
+  const pos = getPos(e);
+  mctx.beginPath();
+  mctx.arc(pos.x, pos.y, 18, 0, Math.PI * 2);
+  mctx.fillStyle = '#fff';
+  mctx.fill();
+});
+
 // 按原图比例设置画布
 function setCanvasSize(w, h) {
-  // 等比例压缩限制最大边长
   let scale = 1;
   if(w > MAX_SIZE || h > MAX_SIZE){
     scale = MAX_SIZE / Math.max(w, h);
@@ -101,7 +145,6 @@ function setCanvasSize(w, h) {
   imgCanvas.height = ch;
   maskCanvas.width = cw;
   maskCanvas.height = ch;
-  // 容器自适应比例
   document.querySelector('.canvas-wrap').style.aspectRatio = `${cw}/${ch}`;
 }
 
@@ -144,26 +187,11 @@ document.getElementById('refFileInput').addEventListener('change', function(e) {
   reader.readAsDataURL(file);
 });
 
-// 3. 涂抹绘制
-maskCanvas.addEventListener('mousedown', () => isDrawing = true);
-maskCanvas.addEventListener('mouseup', () => isDrawing = false);
-maskCanvas.addEventListener('mouseleave', () => isDrawing = false);
-maskCanvas.addEventListener('mousemove', (e) => {
-  if (!isDrawing) return;
-  const rect = maskCanvas.getBoundingClientRect();
-  const x = e.clientX - rect.left;
-  const y = e.clientY - rect.top;
-  mctx.beginPath();
-  mctx.arc(x, y, 18, 0, Math.PI * 2);
-  mctx.fillStyle = '#fff';
-  mctx.fill();
-});
-
 function clearMask() {
   mctx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
 }
 
-// 4. AI生成（携带主图+蒙版+参考图 + 原生比例尺寸）
+// 4. AI生成（修复代理+错误处理）
 async function doEdit() {
   const apiKey = document.getElementById('apiKey').value.trim();
   const model = document.getElementById('modelSelect').value;
@@ -173,6 +201,7 @@ async function doEdit() {
 
   if (!currentImage) { alert('请先上传主图'); return; }
   if (!prompt) { alert('请填写提示词'); return; }
+  if (!apiKey) { alert('请输入Gitee API Key'); return; }
 
   btn.disabled = true;
   btn.innerText = '生成中...';
@@ -188,20 +217,24 @@ async function doEdit() {
     form.append('prompt', prompt);
     form.append('image', imgBlob, 'image.png');
     form.append('mask', maskBlob, 'mask.png');
-    // 携带参考图
     if(refImage){
       const refBlob = await new Promise(res => refCanvas.toBlob(res, 'image/png'));
       form.append('reference_image', refBlob, 'reference.png');
     }
     form.append('n', 1);
-    // 使用原图实际比例尺寸
     form.append('size', `${imgCanvas.width}x${imgCanvas.height}`);
 
-    const res = await fetch('https://ai.gitee.com/v1/images/edits', {
+    // ✅ 关键：使用稳定代理
+    const apiUrl = "https://ai.gitee.com/v1/images/edits";
+    const res = await fetch(getProxyUrl(apiUrl), {
       method: 'POST',
       headers: { Authorization: `Bearer ${apiKey}` },
       body: form
     });
+
+    if (!res.ok) {
+      throw new Error(`请求错误: ${res.status}`);
+    }
 
     const json = await res.json();
     console.log('返回数据:', json);
@@ -212,7 +245,7 @@ async function doEdit() {
       alert('生成成功！');
     } 
     else if (json.data?.[0]?.url) {
-      const imgRes = await fetch(json.data[0].url);
+      const imgRes = await fetch(getProxyUrl(json.data[0].url));
       const blob = await imgRes.blob();
       currentBase64 = await new Promise(r => {
         const reader = new FileReader();
