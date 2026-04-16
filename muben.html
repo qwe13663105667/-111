@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0,user-scalable=no">
+<title>Gitee AI 图片编辑</title>
+<style>
+*{box-sizing:border-box;font-family:system-ui,sans-serif}
+body{margin:0;padding:20px;background:#111;color:#fff}
+.container{max-width:1200px;margin:0 auto;display:grid;gap:16px}
+.card{background:#222;border-radius:12px;padding:16px}
+.flex{display:flex;gap:16px;flex-wrap:wrap}
+.col{flex:1;min-width:280px}
+input,textarea,select{width:100%;padding:10px;border-radius:8px;border:none;background:#333;color:#fff;margin-bottom:10px}
+button{width:100%;padding:10px;border-radius:8px;border:0;background:#0099ff;color:#fff;font-weight:bold;cursor:pointer;margin-top:5px}
+button:disabled{background:#666;cursor:not-allowed}
+.canvas-wrap{position:relative;width:100%;max-width:450px;background:#000;border-radius:8px;overflow:hidden;margin:0 auto}
+canvas{position:absolute;left:0;top:0;width:100%;height:100%}
+#maskCanvas{pointer-events:none;touch-action:none}
+.img-preview{max-width:100%;border-radius:8px;margin-top:10px;display:block;border:2px solid #444}
+.tip{font-size:12px;color:#888;margin-top:5px}
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="card">
+    <h3>Gitee AI 图片编辑 | 比例自适应 + 双图参考</h3>
+    <input type="text" id="apiKey" placeholder="请输入你的Gitee API Key">
+    <select id="modelSelect">
+      <option value="Qwen-Image-Edit" selected>Qwen-Image-Edit (人像推荐)</option>
+      <option value="nano-banana">nano-banana (谷歌)</option>
+    </select>
+    <textarea id="prompt" rows="3" placeholder="高质量，清晰，细节丰富，8k，写实"></textarea>
+  </div>
+  <div class="flex">
+    <div class="col card">
+      <h3>主图 + 涂抹编辑区域</h3>
+      <input type="file" id="fileInput" accept="image/*" style="background:#444">
+      <div class="canvas-wrap"><canvas id="imgCanvas"></canvas><canvas id="maskCanvas"></canvas></div>
+      <button onclick="clearMask()">清空涂抹</button>
+    </div>
+    <div class="col card">
+      <h3>参考图（第二张参考素材）</h3>
+      <input type="file" id="refFileInput" accept="image/*" style="background:#444">
+      <div class="canvas-wrap" style="aspect-ratio:1/1;"><canvas id="refCanvas"></canvas></div>
+      <p class="tip">上传参考图用于风格/构图/人物参考</p>
+    </div>
+    <div class="col card">
+      <h3>生成结果</h3>
+      <button id="generateBtn" onclick="doEdit()">开始生成</button>
+      <button onclick="downloadResult()" style="background:#28a745;margin-top:8px">⬇ 下载图片</button>
+      <p class="tip">自动沿用原图比例生成</p>
+      <img id="result" class="img-preview" alt="生成结果">
+    </div>
+  </div>
+</div>
+
+<script>
+const imgCanvas=document.getElementById('imgCanvas'),maskCanvas=document.getElementById('maskCanvas'),refCanvas=document.getElementById('refCanvas');
+const ctx=imgCanvas.getContext('2d'),mctx=maskCanvas.getContext('2d'),refCtx=refCanvas.getContext('2d');
+let currentImage=null,refImage=null,imgNaturalW=0,imgNaturalH=0,isDrawing=false,currentBase64='';
+const MAX_SIZE=1024,PROXY_LIST=[u=>`https://cors.eu.org/${u}`,u=>`https://corsproxy.io/?${u}`,u=>`https://proxy.cors.sh/${u}`,u=>`https://cors-proxy.htmldriven.com/?url=${u}`,u=>`https://allowanyorigin.deno.dev/${u}`,u=>`https://proxy.origin-free.workers.dev/?${u}`,u=>`https://cors.lck666.workers.dev/?${u}`,u=>`https://open-cors.vercel.app/?url=${u}`,u=>`https://cors-service.vercel.app/?url=${u}`,u=>`https://stable-cors.deno.dev/${u}`,u=>`https://safe-cors.zeabur.app/${u}`,u=>`https://cors-stable.vercel.app/?${u}`,u=>`https://fast-cors.zeabur.app/${u}`,u=>`https://cors-helper.vercel.app/?url=${u}`,u=>`https://pure-cors.deno.dev/${u}`,u=>`https://lite-cors.deno.dev/${u}`,u=>`https://mini-cors.deno.dev/${u}`,u=>`https://global-cors.zeabur.app/${u}`,u=>`https://easy-cors.zeabur.app/${u}`,u=>`https://cors-bypass.zeabur.app/${u}`,u=>`https://webproxy.fly.dev/${u}`,u=>`https://no-cors.vercel.app/${u}`,u=>`https://cors-api.deno.dev/${u}`,u=>`https://cors-proxy.vercel.app/?${u}`,u=>`https://net-cors.deno.dev/${u}`,u=>`https://link-cors.zeabur.app/${u}`,u=>`https://cors-fast.vercel.app/?url=${u}`,u=>`https://pure-proxy.zeabur.app/${u}`,u=>`https://cors-safe.vercel.app/?${u}`,u=>`https://lite-proxy.zeabur.app/${u}`,u=>`https://cors-lite.vercel.app/?url=${u}`,u=>`https://mini-proxy.zeabur.app/${u}`,u=>`https://any-cors.deno.dev/${u}`,u=>`https://free-cors.deno.dev/${u}`,u=>`https://crossorigin.me/${u}`,u=>`https://cors-anywhere.herokuapp.com/${u}`,u=>`https://server.corsproxy.xyz/?url=${u}`,u=>`https://cors-fix.vercel.app/api/cors?url=${u}`,u=>`https://cors-link.vercel.app/?${u}`];
+let proxyIndex=0;
+function getProxyUrl(t){let e=encodeURIComponent(t),f=PROXY_LIST[proxyIndex%PROXY_LIST.length];proxyIndex++;return f(e)}
+function getPos(e){let r=maskCanvas.getBoundingClientRect(),t=e.touches?e.touches[0]:e;return{x:t.clientX-r.left,y:t.clientY-r.top}}
+maskCanvas.addEventListener('touchstart',e=>{e.preventDefault();isDrawing=true});
+maskCanvas.addEventListener('touchmove',e=>{if(!isDrawing)return;e.preventDefault();let p=getPos(e);mctx.beginPath();mctx.arc(p.x,p.y,20,0,Math.PI*2);mctx.fillStyle='#fff';mctx.fill()});
+maskCanvas.addEventListener('touchend',()=>isDrawing=false);
+maskCanvas.addEventListener('mousedown',()=>isDrawing=true);
+maskCanvas.addEventListener('mouseup,mouseleave',()=>isDrawing=false);
+maskCanvas.addEventListener('mousemove',e=>{if(!isDrawing)return;let p=getPos(e);mctx.beginPath();mctx.arc(p.x,p.y,18,0,Math.PI*2);mctx.fillStyle='#fff';mctx.fill()});
+function setCanvasSize(w,h){let s=1;if(w>MAX_SIZE||h>MAX_SIZE)s=MAX_SIZE/Math.max(w,h);let cw=Math.round(w*s),ch=Math.round(h*s);imgCanvas.width=cw;imgCanvas.height=ch;maskCanvas.width=cw;maskCanvas.height=ch;document.querySelector('.canvas-wrap').style.aspectRatio=`${cw}/${ch}`}
+document.getElementById('fileInput').addEventListener('change',e=>{let f=e.target.files[0];if(!f)return;let r=new FileReader();r.onload=ev=>{let img=new Image();img.onload=()=>{currentImage=img;imgNaturalW=img.width;imgNaturalH=img.height;setCanvasSize(img.width,img.height);ctx.drawImage(img,0,0,imgCanvas.width,imgCanvas.height);mctx.clearRect(0,0,maskCanvas.width,maskCanvas.height)};img.src=ev.target.result};r.readAsDataURL(f)});
+document.getElementById('refFileInput').addEventListener('change',e=>{let f=e.target.files[0];if(!f)return;let r=new FileReader();r.onload=ev=>{let img=new Image();img.onload=()=>{refImage=img;refCanvas.width=512;refCanvas.height=512;refCtx.clearRect(0,0,512,512);refCtx.drawImage(img,0,0,512,512)};img.src=ev.target.result};r.readAsDataURL(f)});
+function clearMask(){mctx.clearRect(0,0,maskCanvas.width,maskCanvas.height)}
+async function doEdit(){
+  let key=document.getElementById('apiKey').value.trim(),model=document.getElementById('modelSelect').value,prompt=document.getElementById('prompt').value.trim();
+  let btn=document.getElementById('generateBtn'),resImg=document.getElementById('result');
+  if(!currentImage||!prompt||!key){alert('请填写完整信息+上传主图');return}
+  btn.disabled=true;btn.innerText='生成中...';resImg.src='';currentBase64='';
+  try{
+    let imgBlob=await new Promise(s=>imgCanvas.toBlob(s,'image/png')),maskBlob=await new Promise(s=>maskCanvas.toBlob(s,'image/png'));
+    let form=new FormData();form.append('model',model);form.append('prompt',prompt);form.append('image',imgBlob,'image.png');form.append('mask',maskBlob,'mask.png');
+    if(refImage){let refBlob=await new Promise(s=>refCanvas.toBlob(s,'image/png'));form.append('reference_image',refBlob,'reference.png')}
+    form.append('n',1);form.append('size',`${imgCanvas.width}x${imgCanvas.height}`);
+    let apiUrl="https://ai.gitee.com/v1/images/edits";
+    let res=await fetch(getProxyUrl(apiUrl),{method:'POST',headers:{Authorization:`Bearer ${key}`},body:form});
+    if(!res.ok)throw new Error('err');
+    let json=await res.json();
+    if(json.data?.[0]?.b64_json){currentBase64=`data:image/png;base64,${json.data[0].b64_json}`;resImg.src=currentBase64;alert('生成成功！')}
+    else if(json.data?.[0]?.url){let blob=await (await fetch(getProxyUrl(json.data[0].url))).blob();currentBase64=await new Promise(s=>{let r=new FileReader();r.onload=e=>s(e.target.result);r.readAsDataURL(blob)});resImg.src=currentBase64;alert('生成成功！')}
+    else{alert('无返回数据')}
+  }catch(e){alert('代理已自动切换，再次点击生成即可')}
+  finally{btn.disabled=false;btn.innerText='开始生成'}
+}
+function downloadResult(){if(!currentBase64){alert('先生成图片');return}let a=document.createElement('a');a.href=currentBase64;a.download='gitee-ai-edit.png';a.click()}
+</script>
+</body>
+</html>
+
