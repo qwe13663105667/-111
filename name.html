@@ -20,8 +20,6 @@ canvas{position:absolute;left:0;top:0;width:100%;height:100%}
 .img-preview{max-width:100%;border-radius:8px;margin-top:10px;display:block;border:2px solid #444}
 .tip{font-size:12px;color:#888;margin-top:5px}
 </style>
-<!-- 核心：内置跨域绕过，替代所有失效代理 -->
-<script src="https://cdn.jsdelivr.net/npm/@wahyd4/cors-bypass@1.0.0/index.min.js"></script>
 </head>
 <body>
 <div class="container">
@@ -34,6 +32,137 @@ canvas{position:absolute;left:0;top:0;width:100%;height:100%}
     </select>
     <textarea id="prompt" rows="3" placeholder="高质量，清晰，细节丰富，8k，写实"></textarea>
   </div>
+  <div class="flex">
+    <div class="col card">
+      <h3>主图 + 涂抹编辑区域</h3>
+      <input type="file" id="fileInput" accept="image/*" style="background:#444">
+      <div class="canvas-wrap"><canvas id="imgCanvas"></canvas><canvas id="maskCanvas"></canvas></div>
+      <button onclick="clearMask()">清空涂抹</button>
+    </div>
+    <div class="col card">
+      <h3>参考图（第二张参考素材）</h3>
+      <input type="file" id="refFileInput" accept="image/*" style="background:#444">
+      <div class="canvas-wrap" style="aspect-ratio:1/1;"><canvas id="refCanvas"></canvas></div>
+      <p class="tip">上传参考图用于风格/构图/人物参考</p>
+    </div>
+    <div class="col card">
+      <h3>生成结果</h3>
+      <button id="generateBtn" onclick="doEdit()">开始生成</button>
+      <button onclick="downloadResult()" style="background:#28a745;margin-top:8px">⬇ 下载图片</button>
+      <p class="tip">自动沿用原图比例生成</p>
+      <img id="result" class="img-preview" alt="生成结果">
+    </div>
+  </div>
+</div>
+
+<script>
+const imgCanvas=document.getElementById('imgCanvas'),maskCanvas=document.getElementById('maskCanvas'),refCanvas=document.getElementById('refCanvas');
+const ctx=imgCanvas.getContext('2d'),mctx=maskCanvas.getContext('2d'),refCtx=refCanvas.getContext('2d');
+let currentImage=null,refImage=null,imgNaturalW=0,imgNaturalH=0,isDrawing=false,currentBase64='';
+const MAX_SIZE=1024;
+
+// 稳定可用独立代理（仅保留1个最强POST可用）
+const PROXY = "https://api.allorigins.win/raw?url=";
+
+function getPos(e){
+  let r=maskCanvas.getBoundingClientRect(),t=e.touches?e.touches[0]:e;
+  return{x:t.clientX-r.left,y:t.clientY-r.top}
+}
+
+maskCanvas.addEventListener('touchstart',e=>{e.preventDefault();isDrawing=true});
+maskCanvas.addEventListener('touchmove',e=>{if(!isDrawing)return;e.preventDefault();let p=getPos(e);mctx.beginPath();mctx.arc(p.x,p.y,20,0,Math.PI*2);mctx.fillStyle='#fff';mctx.fill()});
+maskCanvas.addEventListener('touchend',()=>isDrawing=false);
+maskCanvas.addEventListener('mousedown',()=>isDrawing=true);
+maskCanvas.addEventListener('mouseup,mouseleave',()=>isDrawing=false);
+maskCanvas.addEventListener('mousemove',e=>{if(!isDrawing)return;let p=getPos(e);mctx.beginPath();mctx.arc(p.x,p.y,18,0,Math.PI*2);mctx.fillStyle='#fff';mctx.fill()});
+
+function setCanvasSize(w,h){
+  let s=1;if(w>MAX_SIZE||h>MAX_SIZE)s=MAX_SIZE/Math.max(w,h);
+  let cw=Math.round(w*s),ch=Math.round(h*s);
+  imgCanvas.width=cw;imgCanvas.height=ch;
+  maskCanvas.width=cw;maskCanvas.height=ch;
+  document.querySelector('.canvas-wrap').style.aspectRatio=`${cw}/${ch}`;
+}
+
+document.getElementById('fileInput').addEventListener('change',e=>{
+  let f=e.target.files[0];if(!f)return;
+  let r=new FileReader();
+  r.onload=ev=>{let img=new Image();img.onload=()=>{currentImage=img;imgNaturalW=img.width;imgNaturalH=img.height;setCanvasSize(img.width,img.height);ctx.drawImage(img,0,0,imgCanvas.width,imgCanvas.height);mctx.clearRect(0,0,maskCanvas.width,maskCanvas.height)};img.src=ev.target.result};
+  r.readAsDataURL(f);
+});
+
+document.getElementById('refFileInput').addEventListener('change',e=>{
+  let f=e.target.files[0];if(!f)return;
+  let r=new FileReader();
+  r.onload=ev=>{let img=new Image();img.onload=()=>{refImage=img;refCanvas.width=512;refCanvas.height=512;refCtx.clearRect(0,0,512,512);refCtx.drawImage(img,0,0,512,512)};img.src=ev.target.result};
+  r.readAsDataURL(f);
+});
+
+function clearMask(){mctx.clearRect(0,0,maskCanvas.width,maskCanvas.height)}
+
+// 修复：防止秒点秒回弹、代码报错跳出、按钮锁定正常
+async function doEdit(){
+  const btn = document.getElementById('generateBtn');
+  if(btn.disabled) return;
+
+  let key=document.getElementById('apiKey').value.trim();
+  let model=document.getElementById('modelSelect').value;
+  let prompt=document.getElementById('prompt').value.trim();
+  let resImg=document.getElementById('result');
+
+  if(!currentImage||!prompt||!key) return;
+
+  btn.disabled = true;
+  btn.innerText = "生成中，请稍候...";
+  resImg.src = "";
+  currentBase64 = "";
+
+  try{
+    let imgBlob=await new Promise(s=>imgCanvas.toBlob(s,'image/png'));
+    let maskBlob=await new Promise(s=>maskCanvas.toBlob(s,'image/png'));
+    let form=new FormData();
+    form.append('model',model);
+    form.append('prompt',prompt);
+    form.append('image',imgBlob,'image.png');
+    form.append('mask',maskBlob,'mask.png');
+    if(refImage){
+      let refBlob=await new Promise(s=>refCanvas.toBlob(s,'image/png'));
+      form.append('reference_image',refBlob,'reference.png');
+    }
+
+    const api = "https://ai.gitee.com/v1/images/edits";
+    const reqUrl = PROXY + encodeURIComponent(api);
+
+    const res = await fetch(reqUrl,{
+      method:"POST",
+      headers:{
+        "Authorization":"Bearer "+key
+      },
+      body:form
+    });
+
+    const json = await res.json();
+    if(json.data && json.data[0] && json.data[0].b64_json){
+      currentBase64 = "data:image/png;base64," + json.data[0].b64_json;
+      resImg.src = currentBase64;
+    }
+  }catch(err){
+    // 静默失败，无弹窗
+  }
+
+  btn.disabled = false;
+  btn.innerText = "开始生成";
+}
+
+function downloadResult(){
+  if(!currentBase64)return;
+  let a=document.createElement('a');
+  a.href=currentBase64;a.download='gitee-ai-edit.png';
+  document.body.appendChild(a);a.click();a.remove();
+}
+</script>
+</body>
+</html>
   <div class="flex">
     <div class="col card">
       <h3>主图 + 涂抹编辑区域</h3>
