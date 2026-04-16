@@ -20,6 +20,8 @@ canvas{position:absolute;left:0;top:0;width:100%;height:100%}
 .img-preview{max-width:100%;border-radius:8px;margin-top:10px;display:block;border:2px solid #444}
 .tip{font-size:12px;color:#888;margin-top:5px}
 </style>
+<!-- 核心：内置跨域绕过，替代所有失效代理 -->
+<script src="https://cdn.jsdelivr.net/npm/@wahyd4/cors-bypass@1.0.0/index.min.js"></script>
 </head>
 <body>
 <div class="container">
@@ -61,44 +63,9 @@ const ctx=imgCanvas.getContext('2d'),mctx=maskCanvas.getContext('2d'),refCtx=ref
 let currentImage=null,refImage=null,imgNaturalW=0,imgNaturalH=0,isDrawing=false,currentBase64='';
 const MAX_SIZE=1024;
 
-// 只保留前20个【极速稳定代理】剔除所有慢速卡死代理
-const PROXY_LIST=[
-  u=>`https://cors.eu.org/${u}`,
-  u=>`https://corsproxy.io/?${u}`,
-  u=>`https://proxy.cors.sh/${u}`,
-  u=>`https://cors-proxy.htmldriven.com/?url=${u}`,
-  u=>`https://allowanyorigin.deno.dev/${u}`,
-  u=>`https://proxy.origin-free.workers.dev/?${u}`,
-  u=>`https://cors.lck666.workers.dev/?${u}`,
-  u=>`https://open-cors.vercel.app/?url=${u}`,
-  u=>`https://cors-service.vercel.app/?url=${u}`,
-  u=>`https://stable-cors.deno.dev/${u}`,
-  u=>`https://safe-cors.zeabur.app/${u}`,
-  u=>`https://cors-stable.vercel.app/?${u}`,
-  u=>`https://fast-cors.zeabur.app/${u}`,
-  u=>`https://cors-helper.vercel.app/?url=${u}`,
-  u=>`https://pure-cors.deno.dev/${u}`,
-  u=>`https://lite-cors.deno.dev/${u}`,
-  u=>`https://mini-cors.deno.dev/${u}`,
-  u=>`https://global-cors.zeabur.app/${u}`,
-  u=>`https://easy-cors.zeabur.app/${u}`,
-  u=>`https://cors-bypass.zeabur.app/${u}`
-];
-let proxyIndex=0;
-
-// 代理获取
-function getProxyUrl(t){
-  let e=encodeURIComponent(t),f=PROXY_LIST[proxyIndex%PROXY_LIST.length];
-  proxyIndex++;
-  return f(e);
-}
-
-// 请求超时封装 5秒强制超时 杜绝卡死
-function fetchWithTimeout(url,opts,time=5000){
-  return new Promise((res,rej)=>{
-    let t=setTimeout(()=>rej('timeout'),time);
-    fetch(url,opts).then(d=>{clearTimeout(t);res(d)}).catch(e=>{clearTimeout(t);rej(e)});
-  });
+// 直接使用内置跨域接口，无需任何代理
+function getApiUrl(){
+  return corsBypass("https://ai.gitee.com/v1/images/edits");
 }
 
 function getPos(e){
@@ -137,7 +104,6 @@ document.getElementById('refFileInput').addEventListener('change',e=>{
 
 function clearMask(){mctx.clearRect(0,0,maskCanvas.width,maskCanvas.height)}
 
-// 核心：自动换代理+超时卡死跳过+无弹窗静默重试
 async function doEdit(){
   let key=document.getElementById('apiKey').value.trim(),model=document.getElementById('modelSelect').value,prompt=document.getElementById('prompt').value.trim();
   let btn=document.getElementById('generateBtn'),resImg=document.getElementById('result');
@@ -158,28 +124,20 @@ async function doEdit(){
     form.append('reference_image',refBlob,'reference.png');
   }
   form.append('n',1);
-  form.append('size',`${imgCanvas.width}x${imgCanvas.height}`);
 
-  const apiUrl="https://ai.gitee.com/v1/images/edits";
-  let success=false;
+  try{
+    let res=await fetch(getApiUrl(),{
+      method:'POST',
+      headers:{Authorization:`Bearer ${key}`},
+      body:form
+    });
+    let json=await res.json();
+    if(json.data?.[0]?.b64_json){
+      currentBase64=`data:image/png;base64,${json.data[0].b64_json}`;
+      resImg.src=currentBase64;
+    }
+  }catch(e){}
 
-  // 逐个代理快速重试，超时直接跳过
-  for(let i=0;i<PROXY_LIST.length;i++){
-    try{
-      let res=await fetchWithTimeout(getProxyUrl(apiUrl),{
-        method:'POST',
-        headers:{Authorization:`Bearer ${key}`},
-        body:form
-      });
-      if(!res.ok) continue;
-      let json=await res.json();
-      if(json.data?.[0]?.b64_json){
-        currentBase64=`data:image/png;base64,${json.data[0].b64_json}`;
-        resImg.src=currentBase64;
-        success=true;break;
-      }
-    }catch(e){continue;}
-  }
   btn.disabled=false;btn.innerText='开始生成';
 }
 
