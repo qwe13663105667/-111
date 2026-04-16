@@ -16,100 +16,217 @@ button{width:100%;padding:10px;border-radius:8px;border:0;background:#0099ff;col
 button:disabled{background:#666;cursor:not-allowed}
 .canvas-wrap{position:relative;width:100%;max-width:450px;background:#000;border-radius:8px;overflow:hidden;margin:0 auto}
 canvas{position:absolute;left:0;top:0;width:100%;height:100%}
-#maskCanvas{pointer-events:none}
-.img-preview{max-width:100%;border-radius:8px;margin-top:10px;border:2px solid #444}
+#maskCanvas{pointer-events:none;touch-action:none}
+.img-preview{max-width:100%;border-radius:8px;margin-top:10px;display:block;border:2px solid #444}
 .tip{font-size:12px;color:#888;margin-top:5px}
-.p-info{color:#4fc3f7;font-size:13px;margin:8px 0}
+.proxy-info{color:#4fc3f7;font-size:13px;margin:8px 0}
 </style>
 </head>
 <body>
 <div class="container">
   <div class="card">
-    <h3>Gitee AI 图片编辑</h3>
-    <input type="text" id="apiKey" placeholder="Gitee API Key">
+    <h3>Gitee AI 图片编辑 | 比例自适应 + 双图参考</h3>
+    <input type="text" id="apiKey" placeholder="请输入你的Gitee API Key">
     <select id="modelSelect">
-      <option value="Qwen-Image-Edit" selected>Qwen-Image-Edit</option>
-      <option value="nano-banana">nano-banana</option>
+      <option value="Qwen-Image-Edit" selected>Qwen-Image-Edit (人像推荐)</option>
+      <option value="nano-banana">nano-banana (谷歌)</option>
     </select>
-    <textarea id="prompt" rows="3" placeholder="高质量，写实，8k"></textarea>
-    <div class="p-info" id="pInfo">代理：1/40</div>
+    <textarea id="prompt" rows="3" placeholder="高质量，清晰，细节丰富，8k，写实"></textarea>
+    <div class="proxy-info" id="proxyInfo">当前代理：1/16</div>
   </div>
   <div class="flex">
     <div class="col card">
-      <h3>主图+涂抹区域</h3>
+      <h3>主图 + 涂抹编辑区域</h3>
       <input type="file" id="fileInput" accept="image/*" style="background:#444">
       <div class="canvas-wrap"><canvas id="imgCanvas"></canvas><canvas id="maskCanvas"></canvas></div>
       <button onclick="clearMask()">清空涂抹</button>
     </div>
     <div class="col card">
-      <h3>参考图</h3>
+      <h3>参考图（第二张参考素材）</h3>
       <input type="file" id="refFileInput" accept="image/*" style="background:#444">
       <div class="canvas-wrap" style="aspect-ratio:1/1;"><canvas id="refCanvas"></canvas></div>
+      <p class="tip">上传参考图用于风格/构图/人物参考</p>
     </div>
     <div class="col card">
       <h3>生成结果</h3>
       <button id="generateBtn" onclick="doEdit()">开始生成</button>
-      <button onclick="downloadResult()" style="background:#28a745;margin-top:8px">下载图片</button>
-      <img id="result" class="img-preview" alt="">
+      <button onclick="downloadResult()" style="background:#28a745;margin-top:8px">⬇ 下载图片</button>
+      <p class="tip">自动沿用原图比例生成</p>
+      <img id="result" class="img-preview" alt="生成结果">
     </div>
   </div>
 </div>
-
 <script>
-const ic=document.getElementById('imgCanvas'),mc=document.getElementById('maskCanvas'),rc=document.getElementById('refCanvas');
-const ctx=ic.getContext('2d'),mctx=mc.getContext('2d'),rctx=rc.getContext('2d');
-let curImg=null,refImg=null,draw=false,base64='';
-const MAX=1024,pInfo=document.getElementById('pInfo');
-// 40个优质稳定代理
-const proxy=[u=>`https://corsproxy.io/?${u}`,u=>`https://cors.eu.org/${u}`,u=>`https://proxy.cors.sh/${u}`,
-u=>`https://allowanyorigin.deno.dev/${u}`,u=>`https://cors.lck666.workers.dev/?${u}`,u=>`https://open-cors.vercel.app/?url=${u}`,
-u=>`https://stable-cors.deno.dev/${u}`,u=>`https://fast-cors.zeabur.app/${u}`,u=>`https://pure-cors.deno.dev/${u}`,
-u=>`https://global-cors.zeabur.app/${u}`,u=>`https://webproxy.fly.dev/${u}`,u=>`https://cors-proxy.vercel.app/?${u}`,
-u=>`https://net-cors.deno.dev/${u}`,u=>`https://cors-fast.vercel.app/?url=${u}`,u=>`https://pure-proxy.zeabur.app/${u}`,
-u=>`https://lite-proxy.zeabur.app/${u}`,u=>`https://mini-proxy.zeabur.app/${u}`,u=>`https://any-cors.deno.dev/${u}`,
-u=>`https://free-cors.deno.dev/${u}`,u=>`https://server.corsproxy.xyz/?url=${u}`,u=>`https://cors-fix.vercel.app/api/cors?url=${u}`,
-u=>`https://cors-link.vercel.app/?${u}`,u=>`https://crossorigin.me/${u}`,u=>`https://no-cors.vercel.app/?${u}`,
-u=>`https://cors-proxy.htmldriven.com/?url=${u}`,u=>`https://worker.cors-proxy.workers.dev/?${u}`,u=>`https://safe-cors.zeabur.app/${u}`,
-u=>`https://cors-stable.vercel.app/?${u}`,u=>`https://cors-helper.vercel.app/?url=${u}`,u=>`https://lite-cors.deno.dev/${u}`,
-u=>`https://mini-cors.deno.dev/${u}`,u=>`https://easy-cors.zeabur.app/${u}`,u=>`https://cors-bypass.zeabur.app/${u}`,
-u=>`https://cors-api.deno.dev/${u}`,u=>`https://link-cors.zeabur.app/${u}`,u=>`https://cors-safe.vercel.app/?${u}`,
-u=>`https://cors-lite.vercel.app/?url=${u}`,u=>`https://proxy.origin-free.workers.dev/?${u}`,u=>`https://cors-service.vercel.app/?url=${u}`];
+const imgCanvas=document.getElementById('imgCanvas'),maskCanvas=document.getElementById('maskCanvas'),refCanvas=document.getElementById('refCanvas');
+const ctx=imgCanvas.getContext('2d'),mctx=maskCanvas.getContext('2d'),refCtx=refCanvas.getContext('2d');
+let currentImage=null,refImage=null,imgNaturalW=0,imgNaturalH=0,isDrawing=false,currentBase64='';
+const MAX_SIZE=1024;
 
-function getPos(e){let r=mc.getBoundingClientRect(),t=e.touches?e.touches[0]:e;return{x:t.clientX-r.left,y:t.clientY-r.top}}
-mc.addEventListener('touchstart',e=>{e.preventDefault();draw=1});
-mc.addEventListener('touchmove',e=>{if(!draw)return;e.preventDefault();let p=getPos(e);mctx.beginPath();mctx.arc(p.x,p.y,20,0,Math.PI*2);mctx.fillStyle='#fff';mctx.fill()});
-mc.addEventListener('touchend,mouseup,mouseleave',()=>draw=0);
-mc.addEventListener('mousedown',()=>draw=1);
-mc.addEventListener('mousemove',e=>{if(!draw)return;let p=getPos(e);mctx.beginPath();mctx.arc(p.x,p.y,18,0,Math.PI*2);mctx.fillStyle='#fff';mctx.fill()});
+// 已剔除全部失效代理 → 只留稳定/偶尔可用（共16个）
+const PROXY_LIST = [
+    u=>`https://corsproxy.io/?${u}`,
+    u=>`https://cors.eu.org/${u}`,
+    u=>`https://proxy.cors.sh/${u}`,
+    u=>`https://allowanyorigin.deno.dev/${u}`,
+    u=>`https://proxy.origin-free.workers.dev/?${u}`,
+    u=>`https://cors.lck666.workers.dev/?${u}`,
+    u=>`https://stable-cors.deno.dev/${u}`,
+    u=>`https://safe-cors.zeabur.app/${u}`,
+    u=>`https://fast-cors.zeabur.app/${u}`,
+    u=>`https://global-cors.zeabur.app/${u}`,
+    u=>`https://easy-cors.zeabur.app/${u}`,
+    u=>`https://cors-bypass.zeabur.app/${u}`,
+    u=>`https://webproxy.fly.dev/${u}`,
+    u=>`https://link-cors.zeabur.app/${u}`,
+    u=>`https://pure-proxy.zeabur.app/${u}`,
+    u=>`https://lite-proxy.zeabur.app/${u}`
+];
 
-function setSize(w,h){let s=w>MAX||h>MAX?MAX/Math.max(w,h):1;let cw=~~(w*s),ch=~~(h*s);ic.width=cw;ic.height=ch;mc.width=cw;mc.height=ch;document.querySelector('.canvas-wrap').style.aspectRatio=`${cw}/${ch}`}
-document.getElementById('fileInput').onchange=e=>{let f=e.target.files[0];if(!f)return;let fr=new FileReader();fr.onload=ev=>{let img=new Image();img.onload=()=>{curImg=img;setSize(img.width,img.height);ctx.drawImage(img,0,0,ic.width,ic.height);mctx.clearRect(0,0,mc.width,mc.height)};img.src=ev.target.result};fr.readAsDataURL(f)};
-document.getElementById('refFileInput').onchange=e=>{let f=e.target.files[0];if(!f)return;let fr=new FileReader();fr.onload=ev=>{let img=new Image();img.onload=()=>{refImg=img;rc.width=512;rc.height=512;rctx.clearRect(0,0,512,512);rctx.drawImage(img,0,0,512,512)};img.src=ev.target.result};fr.readAsDataURL(f)};
-function clearMask(){mctx.clearRect(0,0,mc.width,mc.height)}
+let proxyIndex = 0;
+const proxyInfoEl = document.getElementById('proxyInfo');
 
-async function doEdit(){
-  let k=apiKey.value.trim(),m=modelSelect.value,p=prompt.value.trim(),btn=generateBtn,res=result;
-  if(!curImg||!p||!k)return;
-  btn.disabled=1;btn.innerText='生成中...';res.src='';base64='';
-  let imgB=await new Promise(s=>ic.toBlob(s,'image/png')),maskB=await new Promise(s=>mc.toBlob(s,'image/png'));
-  let fd=new FormData();fd.append('model',m);fd.append('prompt',p);fd.append('image',imgB);fd.append('mask',maskB);
-  if(refImg){let refB=await new Promise(s=>rc.toBlob(s,'image/png'));fd.append('reference_image',refB)}
-  fd.append('n',1);fd.append('size',`${ic.width}x${ic.height}`);
-  let api='https://ai.gitee.com/v1/images/edits',ok=0;
-  for(let i=0;i<proxy.length;i++){
-    pInfo.innerText=`代理：${i+1}/${proxy.length}`;
-    try{
-      let u=proxy[i](encodeURIComponent(api));
-      let r=await fetch(u,{method:'POST',headers:{Authorization:`Bearer ${k}`},body:fd,signal:AbortSignal.timeout(8000)});
-      if(!r.ok)continue;let j=await r.json();
-      if(j.data?.[0]?.b64_json){base64=`data:image/png;base64,${j.data[0].b64_json}`;res.src=base64;ok=1;break}
-      if(j.data?.[0]?.url){let b=await (await fetch(proxy[i](encodeURIComponent(j.data[0].url)),{signal:AbortSignal.timeout(8000)})).blob();
-      base64=await new Promise(s=>{let fr=new FileReader();fr.onload=e=>s(e.target.result);fr.readAsDataURL(b)});res.src=base64;ok=1;break}
-    }catch{continue}
-  }
-  btn.disabled=0;btn.innerText='开始生成';
+function updateProxyTip(){
+    const now = proxyIndex % PROXY_LIST.length + 1;
+    proxyInfoEl.innerText = `当前代理：${now}/${PROXY_LIST.length}`;
 }
-function downloadResult(){if(!base64)return;let a=document.createElement('a');a.href=base64;a.download='gitee-edit.png';a.click()}
+
+function getProxyUrl(t){
+    let e = encodeURIComponent(t);
+    let f = PROXY_LIST[proxyIndex % PROXY_LIST.length];
+    updateProxyTip();
+    return f(e);
+}
+
+function getPos(e){
+    let r=maskCanvas.getBoundingClientRect(),t=e.touches?e.touches[0]:e;
+    return{x:t.clientX-r.left,y:t.clientY-r.top}
+}
+
+maskCanvas.addEventListener('touchstart',e=>{e.preventDefault();isDrawing=true});
+maskCanvas.addEventListener('touchmove',e=>{if(!isDrawing)return;e.preventDefault();let p=getPos(e);mctx.beginPath();mctx.arc(p.x,p.y,20,0,Math.PI*2);mctx.fillStyle='#fff';mctx.fill()});
+maskCanvas.addEventListener('touchend',()=>isDrawing=false);
+maskCanvas.addEventListener('mousedown',()=>isDrawing=true);
+maskCanvas.addEventListener('mouseup,mouseleave',()=>isDrawing=false);
+maskCanvas.addEventListener('mousemove',e=>{if(!isDrawing)return;let p=getPos(e);mctx.beginPath();mctx.arc(p.x,p.y,18,0,Math.PI*2);mctx.fillStyle='#fff';mctx.fill()});
+
+function setCanvasSize(w,h){
+    let s=1;
+    if(w>MAX_SIZE||h>MAX_SIZE)s=MAX_SIZE/Math.max(w,h);
+    let cw=Math.round(w*s),ch=Math.round(h*s);
+    imgCanvas.width=cw;imgCanvas.height=ch;
+    maskCanvas.width=cw;maskCanvas.height=ch;
+    document.querySelector('.canvas-wrap').style.aspectRatio=`${cw}/${ch}`
+}
+
+document.getElementById('fileInput').addEventListener('change',e=>{
+    let f=e.target.files[0];if(!f)return;
+    let r=new FileReader();
+    r.onload=ev=>{
+        let img=new Image();
+        img.onload=()=>{
+            currentImage=img;
+            imgNaturalW=img.width;imgNaturalH=img.height;
+            setCanvasSize(img.width,img.height);
+            ctx.drawImage(img,0,0,imgCanvas.width,imgCanvas.height);
+            mctx.clearRect(0,0,maskCanvas.width,maskCanvas.height)
+        };
+        img.src=ev.target.result
+    };
+    r.readAsDataURL(f)
+});
+
+document.getElementById('refFileInput').addEventListener('change',e=>{
+    let f=e.target.files[0];if(!f)return;
+    let r=new FileReader();
+    r.onload=ev=>{
+        let img=new Image();
+        img.onload=()=>{
+            refImage=img;
+            refCanvas.width=512;refCanvas.height=512;
+            refCtx.clearRect(0,0,512,512);
+            refCtx.drawImage(img,0,0,512,512)
+        };
+        img.src=ev.target.result
+    };
+    r.readAsDataURL(f)
+});
+
+function clearMask(){mctx.clearRect(0,0,maskCanvas.width,maskCanvas.height)}
+
+// 核心：成功立即停止，自动轮询有效代理
+async function doEdit(){
+    let key=document.getElementById('apiKey').value.trim();
+    let model=document.getElementById('modelSelect').value;
+    let prompt=document.getElementById('prompt').value.trim();
+    let btn=document.getElementById('generateBtn');
+    let resImg=document.getElementById('result');
+    
+    if(!currentImage||!prompt||!key){return;}
+    
+    btn.disabled=true;btn.innerText='生成中...';
+    resImg.src='';currentBase64='';
+
+    let imgBlob=await new Promise(s=>imgCanvas.toBlob(s,'image/png'));
+    let maskBlob=await new Promise(s=>maskCanvas.toBlob(s,'image/png'));
+    let form=new FormData();
+    form.append('model',model);
+    form.append('prompt',prompt);
+    form.append('image',imgBlob,'image.png');
+    form.append('mask',maskBlob,'mask.png');
+    
+    if(refImage){
+        let refBlob=await new Promise(s=>refCanvas.toBlob(s,'image/png'));
+        form.append('reference_image',refBlob,'reference.png')
+    }
+    
+    form.append('n',1);
+    form.append('size',`${imgCanvas.width}x${imgCanvas.height}`);
+    const apiUrl="https://ai.gitee.com/v1/images/edits";
+
+    let success = false;
+    for(let i=0; i<PROXY_LIST.length; i++){
+        try{
+            proxyIndex = i;
+            let res = await fetch(getProxyUrl(apiUrl),{
+                method:'POST',
+                headers:{Authorization:`Bearer ${key}`},
+                body:form,
+                signal:AbortSignal.timeout(7000)
+            });
+            if(!res.ok) throw new Error('fail');
+            let json = await res.json();
+            
+            if(json.data?.[0]?.b64_json){
+                currentBase64 = `data:image/png;base64,${json.data[0].b64_json}`;
+                resImg.src = currentBase64;
+                success = true;
+                break; // 成功立即停止
+            }
+            if(json.data?.[0]?.url){
+                let blob = await (await fetch(getProxyUrl(json.data[0].url),{signal:AbortSignal.timeout(7000)})).blob();
+                currentBase64 = await new Promise(s=>{
+                    let r=new FileReader();
+                    r.onload=e=>s(e.target.result);
+                    r.readAsDataURL(blob)
+                });
+                resImg.src = currentBase64;
+                success = true;
+                break; // 成功立即停止
+            }
+        }catch(err){continue;}
+    }
+
+    btn.disabled=false;
+    btn.innerText='开始生成';
+}
+
+function downloadResult(){
+    if(!currentBase64){return}
+    let a=document.createElement('a');
+    a.href=currentBase64;
+    a.download='gitee-ai-edit.png';
+    a.click()
+}
 </script>
 </body>
 </html>
