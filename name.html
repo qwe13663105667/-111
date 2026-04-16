@@ -59,8 +59,10 @@ canvas{position:absolute;left:0;top:0;width:100%;height:100%}
 const imgCanvas=document.getElementById('imgCanvas'),maskCanvas=document.getElementById('maskCanvas'),refCanvas=document.getElementById('refCanvas');
 const ctx=imgCanvas.getContext('2d'),mctx=maskCanvas.getContext('2d'),refCtx=refCanvas.getContext('2d');
 let currentImage=null,refImage=null,imgNaturalW=0,imgNaturalH=0,isDrawing=false,currentBase64='';
-const MAX_SIZE=1024,
-PROXY_LIST=[
+const MAX_SIZE=1024;
+
+// 只保留前20个【极速稳定代理】剔除所有慢速卡死代理
+const PROXY_LIST=[
   u=>`https://cors.eu.org/${u}`,
   u=>`https://corsproxy.io/?${u}`,
   u=>`https://proxy.cors.sh/${u}`,
@@ -80,33 +82,23 @@ PROXY_LIST=[
   u=>`https://mini-cors.deno.dev/${u}`,
   u=>`https://global-cors.zeabur.app/${u}`,
   u=>`https://easy-cors.zeabur.app/${u}`,
-  u=>`https://cors-bypass.zeabur.app/${u}`,
-  u=>`https://webproxy.fly.dev/${u}`,
-  u=>`https://no-cors.vercel.app/${u}`,
-  u=>`https://cors-api.deno.dev/${u}`,
-  u=>`https://cors-proxy.vercel.app/?${u}`,
-  u=>`https://net-cors.deno.dev/${u}`,
-  u=>`https://link-cors.zeabur.app/${u}`,
-  u=>`https://cors-fast.vercel.app/?url=${u}`,
-  u=>`https://pure-proxy.zeabur.app/${u}`,
-  u=>`https://cors-safe.vercel.app/?${u}`,
-  u=>`https://lite-proxy.zeabur.app/${u}`,
-  u=>`https://cors-lite.vercel.app/?url=${u}`,
-  u=>`https://mini-proxy.zeabur.app/${u}`,
-  u=>`https://any-cors.deno.dev/${u}`,
-  u=>`https://free-cors.deno.dev/${u}`,
-  u=>`https://crossorigin.me/${u}`,
-  u=>`https://cors-anywhere.herokuapp.com/${u}`,
-  u=>`https://server.corsproxy.xyz/?url=${u}`,
-  u=>`https://cors-fix.vercel.app/api/cors?url=${u}`,
-  u=>`https://cors-link.vercel.app/?${u}`
+  u=>`https://cors-bypass.zeabur.app/${u}`
 ];
 let proxyIndex=0;
 
+// 代理获取
 function getProxyUrl(t){
   let e=encodeURIComponent(t),f=PROXY_LIST[proxyIndex%PROXY_LIST.length];
   proxyIndex++;
   return f(e);
+}
+
+// 请求超时封装 5秒强制超时 杜绝卡死
+function fetchWithTimeout(url,opts,time=5000){
+  return new Promise((res,rej)=>{
+    let t=setTimeout(()=>rej('timeout'),time);
+    fetch(url,opts).then(d=>{clearTimeout(t);res(d)}).catch(e=>{clearTimeout(t);rej(e)});
+  });
 }
 
 function getPos(e){
@@ -145,10 +137,11 @@ document.getElementById('refFileInput').addEventListener('change',e=>{
 
 function clearMask(){mctx.clearRect(0,0,maskCanvas.width,maskCanvas.height)}
 
+// 核心：自动换代理+超时卡死跳过+无弹窗静默重试
 async function doEdit(){
   let key=document.getElementById('apiKey').value.trim(),model=document.getElementById('modelSelect').value,prompt=document.getElementById('prompt').value.trim();
   let btn=document.getElementById('generateBtn'),resImg=document.getElementById('result');
-  if(!currentImage||!prompt||!key){alert('请填写完整信息+上传主图');return}
+  if(!currentImage||!prompt||!key)return;
 
   btn.disabled=true;btn.innerText='生成中...';
   resImg.src='';currentBase64='';
@@ -168,53 +161,35 @@ async function doEdit(){
   form.append('size',`${imgCanvas.width}x${imgCanvas.height}`);
 
   const apiUrl="https://ai.gitee.com/v1/images/edits";
-  let maxRetry=PROXY_LIST.length,success=false;
+  let success=false;
 
-  for(let i=0;i<maxRetry;i++){
+  // 逐个代理快速重试，超时直接跳过
+  for(let i=0;i<PROXY_LIST.length;i++){
     try{
-      let res=await fetch(getProxyUrl(apiUrl),{
+      let res=await fetchWithTimeout(getProxyUrl(apiUrl),{
         method:'POST',
         headers:{Authorization:`Bearer ${key}`},
         body:form
       });
       if(!res.ok) continue;
-
       let json=await res.json();
       if(json.data?.[0]?.b64_json){
         currentBase64=`data:image/png;base64,${json.data[0].b64_json}`;
         resImg.src=currentBase64;
-        success=true;
-        break;
-      }else if(json.data?.[0]?.url){
-        let imgRes=await fetch(getProxyUrl(json.data[0].url));
-        if(!imgRes.ok) continue;
-        let blob=await imgRes.blob();
-        currentBase64=await new Promise(s=>{
-          let r=new FileReader();r.onload=e=>s(e.target.result);r.readAsDataURL(blob);
-        });
-        resImg.src=currentBase64;
-        success=true;
-        break;
+        success=true;break;
       }
-    }catch(e){}
+    }catch(e){continue;}
   }
-
-  if(!success){
-    alert('多次请求失败，请稍后再试');
-  }
-  btn.disabled=false;
-  btn.innerText='开始生成';
+  btn.disabled=false;btn.innerText='开始生成';
 }
 
 function downloadResult(){
-  if(!currentBase64){alert('先生成图片');return}
+  if(!currentBase64)return;
   let a=document.createElement('a');
-  a.href=currentBase64;
-  a.download='gitee-ai-edit.png';
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
+  a.href=currentBase64;a.download='gitee-ai-edit.png';
+  document.body.appendChild(a);a.click();a.remove();
 }
 </script>
 </body>
 </html>
+
