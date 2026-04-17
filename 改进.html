@@ -27,9 +27,9 @@ canvas{position:absolute;left:0;top:0;width:100%;height:100%}
     <h3>Gitee AI 图片编辑 | 比例自适应 + 双图参考</h3>
     <input type="text" id="apiKey" placeholder="请输入你的Gitee AI Key">
     <select id="modelSelect">
-      <option value="Qwen-Image-Edit" selected>Qwen-Image-Edit (编辑/重绘)</option>
-      <option value="hunyuan-image-edit">hunyuan-image-edit (图生图)</option>
-      <option value="doubao-image-edit">doubao-image-edit (图生图)</option>
+      <option value="Qwen-Image-Edit" selected>Qwen-Image-Edit (局部涂抹编辑)</option>
+      <option value="hunyuan-image-edit">hunyuan-image-edit (全局图生图)</option>
+      <option value="doubao-image-edit">doubao-image-edit (全局图生图)</option>
     </select>
     <textarea id="prompt" rows="3" placeholder="高质量，清晰，细节丰富，8k，写实"></textarea>
   </div>
@@ -39,6 +39,7 @@ canvas{position:absolute;left:0;top:0;width:100%;height:100%}
       <input type="file" id="fileInput" accept="image/*" style="background:#444">
       <div class="canvas-wrap"><canvas id="imgCanvas"></canvas><canvas id="maskCanvas"></canvas></div>
       <button onclick="clearMask()">清空涂抹</button>
+      <p class="tip">仅千问模型支持涂抹局部重绘</p>
     </div>
     <div class="col card">
       <h3>参考图（第二张参考素材）</h3>
@@ -60,7 +61,8 @@ canvas{position:absolute;left:0;top:0;width:100%;height:100%}
 const imgCanvas=document.getElementById('imgCanvas'),maskCanvas=document.getElementById('maskCanvas'),refCanvas=document.getElementById('refCanvas');
 const ctx=imgCanvas.getContext('2d'),mctx=maskCanvas.getContext('2d'),refCtx=refCanvas.getContext('2d');
 let currentImage=null,refImage=null,imgNaturalW=0,imgNaturalH=0,isDrawing=false,currentBase64='';
-const MAX_SIZE=1024,PROXY_LIST=[u=>`https://cors.eu.org/${u}`,u=>`https://corsproxy.io/?${u}`,u=>`https://proxy.cors.sh/${u}`];
+const MAX_SIZE=1024;
+const PROXY_LIST=[u=>`https://cors.eu.org/${u}`,u=>`https://corsproxy.io/?${u}`,u=>`https://proxy.cors.sh/${u}`];
 let proxyIndex=0;
 
 function getProxyUrl(t){let e=encodeURIComponent(t),f=PROXY_LIST[proxyIndex%PROXY_LIST.length];proxyIndex++;return f(e)}
@@ -75,13 +77,18 @@ maskCanvas.addEventListener('mousemove',e=>{if(!isDrawing)return;let p=getPos(e)
 
 function setCanvasSize(w,h){let s=1;if(w>MAX_SIZE||h>MAX_SIZE)s=MAX_SIZE/Math.max(w,h);let cw=Math.round(w*s),ch=Math.round(h*s);imgCanvas.width=cw;imgCanvas.height=ch;maskCanvas.width=cw;maskCanvas.height=ch;document.querySelector('.canvas-wrap').style.aspectRatio=`${cw}/${ch}`}
 
+// 图片转base64
+function canvasToBase64(canvas){
+  return canvas.toDataURL('image/png');
+}
+
 document.getElementById('fileInput').addEventListener('change',e=>{let f=e.target.files[0];if(!f)return;let r=new FileReader();r.onload=ev=>{let img=new Image();img.onload=()=>{currentImage=img;imgNaturalW=img.width;imgNaturalH=img.height;setCanvasSize(img.width,img.height);ctx.drawImage(img,0,0,imgCanvas.width,imgCanvas.height);mctx.clearRect(0,0,maskCanvas.width,maskCanvas.height)};img.src=ev.target.result};r.readAsDataURL(f)});
 
 document.getElementById('refFileInput').addEventListener('change',e=>{let f=e.target.files[0];if(!f)return;let r=new FileReader();r.onload=ev=>{let img=new Image();img.onload=()=>{refImage=img;refCanvas.width=512;refCanvas.height=512;refCtx.clearRect(0,0,512,512);refCtx.drawImage(img,0,0,512,512)};img.src=ev.target.result};r.readAsDataURL(f)});
 
 function clearMask(){mctx.clearRect(0,0,maskCanvas.width,maskCanvas.height)}
 
-// 👇👇👇 核心：自动支持 编辑 + 图生图 双模式
+// 核心：分离 编辑接口 / 图生图接口 两套参数
 async function doEdit(){
   let key=document.getElementById('apiKey').value.trim(),
       model=document.getElementById('modelSelect').value,
@@ -94,47 +101,68 @@ async function doEdit(){
   btn.disabled=true;btn.innerText='生成中...';resImg.src='';currentBase64='';
 
   try {
-    let imgBlob=await new Promise(s=>imgCanvas.toBlob(s,'image/png'));
-    let form=new FormData();
-    form.append('model', model);
-    form.append('prompt', prompt);
-    form.append('image', imgBlob, 'image.png');
-    form.append('n', '1');
-    form.append('size', `${imgCanvas.width}x${imgCanvas.height}`);
+    const size = `${imgCanvas.width}x${imgCanvas.height}`;
+    const imgBase64 = canvasToBase64(imgCanvas);
+    let apiUrl, res;
 
-    // 千问需要mask，其他模型图生图不需要
+    // 模式1：千问局部编辑（带蒙版、FormData）
     if(model === 'Qwen-Image-Edit'){
+      apiUrl = 'https://ai.gitee.com/v1/images/edits';
+      let imgBlob=await new Promise(s=>imgCanvas.toBlob(s,'image/png'));
       let maskBlob=await new Promise(s=>maskCanvas.toBlob(s,'image/png'));
+      let form=new FormData();
+      form.append('model', model);
+      form.append('prompt', prompt);
+      form.append('image', imgBlob, 'image.png');
       form.append('mask', maskBlob, 'mask.png');
+      form.append('n', '1');
+      form.append('size', size);
+
+      res=await fetch(getProxyUrl(apiUrl),{
+        method:'POST',
+        headers:{Authorization:`Bearer ${key}`},
+        body:form
+      });
+    }
+    // 模式2：混元 / 豆包 全局图生图（JSON+Base64，无mask）
+    else{
+      apiUrl = 'https://ai.gitee.com/v1/images/generations';
+      const reqData = {
+        model: model,
+        prompt: prompt,
+        image: imgBase64,
+        n: 1,
+        size: size
+      };
+      // 可选参考图
+      if(refImage){
+        reqData.reference_image = canvasToBase64(refCanvas);
+      }
+
+      res=await fetch(getProxyUrl(apiUrl),{
+        method:'POST',
+        headers:{
+          'Authorization':`Bearer ${key}`,
+          'Content-Type':'application/json'
+        },
+        body: JSON.stringify(reqData)
+      });
     }
 
-    // 参考图
-    if(refImage){
-      let refBlob=await new Promise(s=>refCanvas.toBlob(s,'image/png'));
-      form.append('reference_image', refBlob, 'reference.png');
-    }
-
-    // 自动路由接口
-    let apiUrl = model === 'Qwen-Image-Edit' 
-      ? 'https://ai.gitee.com/v1/images/edits' 
-      : 'https://ai.gitee.com/v1/images/generations';
-
-    let res=await fetch(getProxyUrl(apiUrl),{
-      method:'POST',
-      headers:{Authorization:`Bearer ${key}`},
-      body:form
-    });
-
-    if(!res.ok) throw new Error('请求失败');
+    if(!res.ok) throw new Error(`请求错误：${res.status}`);
     let json=await res.json();
+    console.log('接口返回：',json);
 
     if(json.data?.[0]?.b64_json){
       currentBase64=`data:image/png;base64,${json.data[0].b64_json}`;
       resImg.src=currentBase64;
       alert('生成成功！');
+    }else{
+      alert('无生成结果，请更换提示词或模型');
     }
   }catch(e){
-    alert('代理自动切换中，再次点击生成即可');
+    console.error('生成失败：',e);
+    alert(`生成失败：${e.message}，可再次点击生成切换代理`);
   }finally{
     btn.disabled=false;btn.innerText='开始生成';
   }
