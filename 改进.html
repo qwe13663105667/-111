@@ -19,6 +19,8 @@ canvas{position:absolute;left:0;top:0;width:100%;height:100%}
 #maskCanvas{pointer-events:none;touch-action:none}
 .img-preview{max-width:100%;border-radius:8px;margin-top:10px;display:block;border:2px solid #444}
 .tip{font-size:12px;color:#888;margin-top:5px}
+.check-item{display:flex;align-items:center;gap:6px;margin-bottom:10px}
+.check-item input{width:auto;margin:0}
 </style>
 </head>
 <body>
@@ -28,10 +30,15 @@ canvas{position:absolute;left:0;top:0;width:100%;height:100%}
     <input type="text" id="apiKey" placeholder="请输入你的Gitee API Key">
     <select id="modelSelect">
       <option value="Qwen-Image-Edit" selected>Qwen-Image-Edit (人像推荐)</option>
-      <option value="Qwen-Image-Edit-2511">Qwen-Image-Edit-2511</option>
       <option value="DreamO">DreamO</option>
       <option value="FLUX.1-Kontext-dev">FLUX.1-Kontext-dev</option>
     </select>
+
+    <label class="check-item">
+      <input type="checkbox" id="sameStyleCheck">
+      <span>✅ 勾选保持原图：样貌、色调、光影、风格完全一致</span>
+    </label>
+
     <textarea id="prompt" rows="3" placeholder="高质量，清晰，细节丰富，8k，写实"></textarea>
   </div>
   <div class="flex">
@@ -61,7 +68,6 @@ const imgCanvas=document.getElementById('imgCanvas'),maskCanvas=document.getElem
 const ctx=imgCanvas.getContext('2d'),mctx=maskCanvas.getContext('2d'),refCtx=refCanvas.getContext('2d');
 let currentImage=null,refImage=null,imgNaturalW=0,imgNaturalH=0,isDrawing=false,currentBase64='';
 const MAX_SIZE=1024;
-// 仅旧版千问支持蒙版
 const MASK_MODELS = ['Qwen-Image-Edit'];
 const PROXY_LIST=[
   u=>`https://cors.eu.org/${u}`,
@@ -82,7 +88,6 @@ function getPos(e){
   return{x:t.clientX-r.left,y:t.clientY-r.top}
 }
 
-// 优化画笔+防断触
 mctx.lineCap = "round";
 mctx.lineJoin = "round";
 refCtx.lineCap = "round";
@@ -92,7 +97,7 @@ maskCanvas.addEventListener('touchmove',e=>{if(!isDrawing)return;e.preventDefaul
 maskCanvas.addEventListener('touchend',()=>isDrawing=false);
 maskCanvas.addEventListener('mousedown',e=>{isDrawing=true;let p=getPos(e);mctx.moveTo(p.x,p.y)});
 maskCanvas.addEventListener('mouseup,mouseleave',()=>isDrawing=false);
-maskCanvas.addEventListener('mousemove',e=>{if(!isDrawing)return;let p=getPos(e);mctx.lineWidth=36;mctx.beginPath();mctx.lineTo(p.x,p.y);mctx.strokeStyle="#fff";mctx.stroke();mctx.moveTo(p.x,p.y)});
+maskCanvas.addEventListener('mousemove',e=>{if(!isDrawing)return;let p=getPos(e);mctx.lineWidth=36;mctx.beginPath();mctx.lineTo(p.x,p.y);mctx.strokeStyle="#fff";mctx.moveTo(p.x,p.y)});
 
 function setCanvasSize(w,h){
   let s=1;
@@ -103,7 +108,6 @@ function setCanvasSize(w,h){
   document.querySelector('.canvas-wrap').style.aspectRatio=`${cw}/${ch}`;
 }
 
-// 判断蒙版是否为空
 function isMaskEmpty(){
   const imgData = mctx.getImageData(0,0,maskCanvas.width,maskCanvas.height);
   return !imgData.data.some(v=>v>0);
@@ -126,7 +130,6 @@ document.getElementById('fileInput').addEventListener('change',e=>{
   r.readAsDataURL(f)
 });
 
-// 参考图保持原比例
 document.getElementById('refFileInput').addEventListener('change',e=>{
   let f=e.target.files[0];if(!f)return;
   let r=new FileReader();
@@ -151,7 +154,6 @@ document.getElementById('refFileInput').addEventListener('change',e=>{
 
 function clearMask(){mctx.clearRect(0,0,maskCanvas.width,maskCanvas.height)}
 
-// 带代理重试
 async function fetchWithRetry(url,opts,retries=3){
   for(let i=0;i<retries;i++){
     try{
@@ -167,6 +169,12 @@ async function doEdit(){
   let key=document.getElementById('apiKey').value.trim();
   let model=document.getElementById('modelSelect').value;
   let prompt=document.getElementById('prompt').value.trim();
+  let sameStyleText = document.getElementById('sameStyleCheck').checked 
+    ? "严格保留原人物五官样貌、色调、光影、画质、风格完全一致，不改变原有特征" 
+    : "";
+
+  if(sameStyleText) prompt = prompt + "，" + sameStyleText;
+
   let btn=document.getElementById('generateBtn'),resImg=document.getElementById('result');
   if(!currentImage||!prompt||!key){alert('请填写完整信息+上传主图');return}
   btn.disabled=true;btn.innerText='生成中...';
@@ -178,39 +186,19 @@ async function doEdit(){
     form.append('prompt',prompt);
     form.append('image',imgBlob,'image.png');
 
-    // 仅千问 + 非空蒙版 才上传
     if(MASK_MODELS.includes(model) && !isMaskEmpty()){
       let maskBlob=await new Promise(s=>maskCanvas.toBlob(s,'image/png'));
       form.append('mask',maskBlob,'mask.png');
     }
 
-    // 2511 禁止上传参考图
-    if(refImage && model !== "Qwen-Image-Edit-2511"){
+    if(refImage){
       let refBlob=await new Promise(s=>refCanvas.toBlob(s,'image/png'));
       form.append('reference_image',refBlob,'reference.png')
     }
-    
-    // 分辨率配置
-    let sizeStr;
-    if(model === "Qwen-Image-Edit-2511"){
-      sizeStr = "1024x1024";
-    }else{
-      sizeStr = `${imgCanvas.width}x${imgCanvas.height}`;
-    }
+
+    let sizeStr = `${imgCanvas.width}x${imgCanvas.height}`;
     form.append('n',1);
     form.append('size', sizeStr);
-
-    // ========== 新增：DreamO 专属参数配置 ==========
-    if(model === 'DreamO'){
-      // type：style=风格参考 / structure=结构参考 / id=人物ID一致性
-      form.append('type', 'style');
-      // control_mode 控制强度 0.1~1.0
-      form.append('control_mode', '0.85');
-      // 可选：开启参考图强关联
-      form.append('reference_weight', '0.9');
-    }
-    // ==============================================
-
     let apiUrl="https://ai.gitee.com/v1/images/edits";
 
     let res=await fetchWithRetry(apiUrl,{
@@ -256,3 +244,4 @@ function downloadResult(){
 </script>
 </body>
 </html>
+
