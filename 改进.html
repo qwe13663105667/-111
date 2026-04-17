@@ -26,7 +26,7 @@ canvas{position:absolute;left:0;top:0;width:100%;height:100%}
 <body>
 <div class="container">
   <div class="card">
-    <h3>Gitee AI 图片编辑 | 原图尺寸 | 修复下载</h3>
+    <h3>Gitee AI 图片编辑 | 比例自适应 + 双图参考</h3>
     <input type="text" id="apiKey" placeholder="请输入你的Gitee API Key">
     <select id="modelSelect">
       <option value="Qwen-Image-Edit" selected>Qwen-Image-Edit (人像推荐)</option>
@@ -58,7 +58,7 @@ canvas{position:absolute;left:0;top:0;width:100%;height:100%}
       <h3>生成结果</h3>
       <button id="generateBtn" onclick="doEdit()">开始生成</button>
       <button onclick="downloadResult()" style="background:#28a745;margin-top:8px">⬇ 下载图片</button>
-      <p class="tip">严格原图比例+原图尺寸，不会放大裁切</p>
+      <p class="tip">自动沿用原图比例生成</p>
       <img id="result" class="img-preview" alt="生成结果">
     </div>
   </div>
@@ -67,7 +67,7 @@ canvas{position:absolute;left:0;top:0;width:100%;height:100%}
 const imgCanvas=document.getElementById('imgCanvas'),maskCanvas=document.getElementById('maskCanvas'),refCanvas=document.getElementById('refCanvas');
 const ctx=imgCanvas.getContext('2d'),mctx=maskCanvas.getContext('2d'),refCtx=refCanvas.getContext('2d');
 let currentImage=null,refImage=null,imgNaturalW=0,imgNaturalH=0,isDrawing=false,currentBase64='';
-const MAX_SIZE=4096;
+const MAX_SIZE=1024;
 const MASK_MODELS = ['Qwen-Image-Edit'];
 const PROXY_LIST=[
   u=>`https://cors.eu.org/${u}`,
@@ -99,17 +99,13 @@ maskCanvas.addEventListener('mousedown',e=>{isDrawing=true;let p=getPos(e);mctx.
 maskCanvas.addEventListener('mouseup,mouseleave',()=>isDrawing=false);
 maskCanvas.addEventListener('mousemove',e=>{if(!isDrawing)return;let p=getPos(e);mctx.lineWidth=36;mctx.beginPath();mctx.lineTo(p.x,p.y);mctx.strokeStyle="#fff";mctx.moveTo(p.x,p.y)});
 
-// 完全使用【原图真实分辨率】，不会放大压缩
 function setCanvasSize(w,h){
-  imgNaturalW = w;
-  imgNaturalH = h;
-  imgCanvas.width = w;
-  imgCanvas.height = h;
-  maskCanvas.width = w;
-  maskCanvas.height = h;
-  const wrap = document.querySelector('.canvas-wrap');
-  wrap.style.aspectRatio = `${w}/${h}`;
-  wrap.style.maxWidth = "450px";
+  let s=1;
+  if(w>MAX_SIZE||h>MAX_SIZE)s=MAX_SIZE/Math.max(w,h);
+  let cw=Math.round(w*s),ch=Math.round(h*s);
+  imgCanvas.width=cw;imgCanvas.height=ch;
+  maskCanvas.width=cw;maskCanvas.height=ch;
+  document.querySelector('.canvas-wrap').style.aspectRatio=`${cw}/${ch}`;
 }
 
 function isMaskEmpty(){
@@ -124,9 +120,9 @@ document.getElementById('fileInput').addEventListener('change',e=>{
     let img=new Image();
     img.onload=()=>{
       currentImage=img;
-      // 读取原图真实宽高
-      setCanvasSize(img.naturalWidth, img.naturalHeight);
-      ctx.drawImage(img,0,0,img.naturalWidth, img.naturalHeight);
+      imgNaturalW=img.width;imgNaturalH=img.height;
+      setCanvasSize(img.width,img.height);
+      ctx.drawImage(img,0,0,imgCanvas.width,imgCanvas.height);
       clearMask();
     };
     img.src=ev.target.result
@@ -174,7 +170,7 @@ async function doEdit(){
   let model=document.getElementById('modelSelect').value;
   let prompt=document.getElementById('prompt').value.trim();
   let sameStyleText = document.getElementById('sameStyleCheck').checked 
-    ? "严格保留原人物五官样貌、色调、光影、画质、尺寸、比例完全一致，禁止放大、裁切、拉伸" 
+    ? "严格保留原人物五官样貌、色调、光影、画质、风格完全一致，不改变原有特征" 
     : "";
 
   if(sameStyleText) prompt = prompt + "，" + sameStyleText;
@@ -184,25 +180,23 @@ async function doEdit(){
   btn.disabled=true;btn.innerText='生成中...';
   resImg.src='';currentBase64='';
   try{
-    // 用原图尺寸上传，不压缩
-    let imgBlob=await new Promise(s=>imgCanvas.toBlob(s,'image/png',1.0));
+    let imgBlob=await new Promise(s=>imgCanvas.toBlob(s,'image/png'));
     let form=new FormData();
     form.append('model',model);
     form.append('prompt',prompt);
     form.append('image',imgBlob,'image.png');
 
     if(MASK_MODELS.includes(model) && !isMaskEmpty()){
-      let maskBlob=await new Promise(s=>maskCanvas.toBlob(s,'image/png',1.0));
+      let maskBlob=await new Promise(s=>maskCanvas.toBlob(s,'image/png'));
       form.append('mask',maskBlob,'mask.png');
     }
 
     if(refImage){
-      let refBlob=await new Promise(s=>refCanvas.toBlob(s,'image/png',1.0));
+      let refBlob=await new Promise(s=>refCanvas.toBlob(s,'image/png'));
       form.append('reference_image',refBlob,'reference.png')
     }
 
-    // 强制原图真实尺寸
-    let sizeStr = `${imgNaturalW}x${imgNaturalH}`;
+    let sizeStr = `${imgCanvas.width}x${imgCanvas.height}`;
     form.append('n',1);
     form.append('size', sizeStr);
     let apiUrl="https://ai.gitee.com/v1/images/edits";
@@ -219,7 +213,7 @@ async function doEdit(){
     if(json.data?.[0]?.b64_json){
       currentBase64=`data:image/png;base64,${json.data[0].b64_json}`;
       resImg.src=currentBase64;
-      alert('生成成功！已保留原图尺寸，无放大裁切');
+      alert('生成成功！')
     }else if(json.data?.[0]?.url){
       let blob=await (await fetchWithRetry(json.data[0].url,{})).blob();
       currentBase64=await new Promise(s=>{
@@ -228,7 +222,7 @@ async function doEdit(){
         r.readAsDataURL(blob)
       });
       resImg.src=currentBase64;
-      alert('生成成功！已保留原图尺寸，无放大裁切');
+      alert('生成成功！')
     }else{
       alert('模型无返回图像，请更换提示词或模型')
     }
@@ -240,23 +234,22 @@ async function doEdit(){
   }
 }
 
-// ========== 修复下载无反应 核心代码 ==========
+// 修复下载失效 重写稳定版
 function downloadResult(){
   if(!currentBase64){
-    alert('先生成图片再下载');
+    alert('先生成图片');
     return;
   }
-  // 创建下载标签，强制触发下载
-  let link = document.createElement("a");
+  const link = document.createElement('a');
   link.href = currentBase64;
-  link.download = "edit_原图尺寸.png";
-  link.target = "_blank";
+  link.download = 'AI编辑图片.png';
+  link.rel = 'noopener noreferrer';
   document.body.appendChild(link);
   link.click();
-  // 移除标签
+  // 延时移除，防止拦截
   setTimeout(()=>{
     document.body.removeChild(link);
-  },100);
+  }, 200);
 }
 </script>
 </body>
