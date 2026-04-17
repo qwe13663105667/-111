@@ -61,6 +61,7 @@ const imgCanvas=document.getElementById('imgCanvas'),maskCanvas=document.getElem
 const ctx=imgCanvas.getContext('2d'),mctx=maskCanvas.getContext('2d'),refCtx=refCanvas.getContext('2d');
 let currentImage=null,refImage=null,imgNaturalW=0,imgNaturalH=0,isDrawing=false,currentBase64='';
 const MAX_SIZE=1024;
+// 仅旧版千问支持蒙版
 const MASK_MODELS = ['Qwen-Image-Edit'];
 const PROXY_LIST=[
   u=>`https://cors.eu.org/${u}`,
@@ -81,6 +82,7 @@ function getPos(e){
   return{x:t.clientX-r.left,y:t.clientY-r.top}
 }
 
+// 优化画笔+防断触
 mctx.lineCap = "round";
 mctx.lineJoin = "round";
 refCtx.lineCap = "round";
@@ -101,6 +103,7 @@ function setCanvasSize(w,h){
   document.querySelector('.canvas-wrap').style.aspectRatio=`${cw}/${ch}`;
 }
 
+// 判断蒙版是否为空
 function isMaskEmpty(){
   const imgData = mctx.getImageData(0,0,maskCanvas.width,maskCanvas.height);
   return !imgData.data.some(v=>v>0);
@@ -123,6 +126,7 @@ document.getElementById('fileInput').addEventListener('change',e=>{
   r.readAsDataURL(f)
 });
 
+// 参考图保持原比例
 document.getElementById('refFileInput').addEventListener('change',e=>{
   let f=e.target.files[0];if(!f)return;
   let r=new FileReader();
@@ -147,6 +151,7 @@ document.getElementById('refFileInput').addEventListener('change',e=>{
 
 function clearMask(){mctx.clearRect(0,0,maskCanvas.width,maskCanvas.height)}
 
+// 带代理重试
 async function fetchWithRetry(url,opts,retries=3){
   for(let i=0;i<retries;i++){
     try{
@@ -173,30 +178,39 @@ async function doEdit(){
     form.append('prompt',prompt);
     form.append('image',imgBlob,'image.png');
 
+    // 仅千问 + 非空蒙版 才上传
     if(MASK_MODELS.includes(model) && !isMaskEmpty()){
       let maskBlob=await new Promise(s=>maskCanvas.toBlob(s,'image/png'));
       form.append('mask',maskBlob,'mask.png');
     }
 
-    // 仅旧千问允许参考图，2511/FLUX/DreamO禁用
-    if(refImage && model === "Qwen-Image-Edit"){
+    // 2511 禁止上传参考图
+    if(refImage && model !== "Qwen-Image-Edit-2511"){
       let refBlob=await new Promise(s=>refCanvas.toBlob(s,'image/png'));
       form.append('reference_image',refBlob,'reference.png')
     }
-
-    // 分模型固定官方合规尺寸
+    
+    // 分辨率配置
     let sizeStr;
     if(model === "Qwen-Image-Edit-2511"){
-      sizeStr = "768x768";
-    }else if(model === "FLUX.1-Kontext-dev"){
-      sizeStr = "896x896";
+      sizeStr = "1024x1024";
     }else{
       sizeStr = `${imgCanvas.width}x${imgCanvas.height}`;
     }
-
     form.append('n',1);
     form.append('size', sizeStr);
-    form.append('strength','0.85');
+
+    // ========== 新增：DreamO 专属参数配置 ==========
+    if(model === 'DreamO'){
+      // type：style=风格参考 / structure=结构参考 / id=人物ID一致性
+      form.append('type', 'style');
+      // control_mode 控制强度 0.1~1.0
+      form.append('control_mode', '0.85');
+      // 可选：开启参考图强关联
+      form.append('reference_weight', '0.9');
+    }
+    // ==============================================
+
     let apiUrl="https://ai.gitee.com/v1/images/edits";
 
     let res=await fetchWithRetry(apiUrl,{
@@ -222,8 +236,7 @@ async function doEdit(){
       resImg.src=currentBase64;
       alert('生成成功！')
     }else{
-      console.log('接口原始返回',json);
-      alert('模型无返回图像：2511为内测模型，免费Key大概率无权限');
+      alert('模型无返回图像，请更换提示词或模型')
     }
   }catch(e){
     console.error(e);
@@ -243,4 +256,3 @@ function downloadResult(){
 </script>
 </body>
 </html>
-
