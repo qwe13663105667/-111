@@ -6,10 +6,10 @@ export const config = {
 };
 
 export default async function handler(req, res) {
-  // CORS
+  // 完全开放跨域
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  res.setHeader("Access-Control-Allow-Headers", "*");
 
   if (req.method === "OPTIONS") {
     return res.status(200).end();
@@ -21,44 +21,37 @@ export default async function handler(req, res) {
   }
 
   try {
-    // 读取原始流
+    // 读取原始上传流
     const chunks = [];
     for await (const chunk of req) {
       chunks.push(chunk);
     }
     const body = Buffer.concat(chunks);
 
-    // 构造请求头
+    // 转发所有请求头（包括 Authorization！关键修复）
     const headers = new Headers();
     for (const [key, val] of Object.entries(req.headers)) {
       const lk = key.toLowerCase();
-      if (lk === "host" || lk === "origin" || lk === "referer") continue;
+      // 只过滤掉会导致403的host，其他全部保留
+      if (lk === "host" || lk === "origin") continue;
       headers.set(key, val);
     }
 
-    // 转发请求
+    // 转发请求（支持图片、formdata、header）
     const response = await fetch(targetUrl, {
       method: req.method,
-      headers,
-      body: body.length > 0 ? body : undefined,
+      headers: headers,
+      body: body.length ? body : undefined,
       redirect: "follow",
     });
 
-    // 回传响应头
-    response.headers.forEach((v, k) => {
-      if (!["content-length", "content-encoding"].includes(k.toLowerCase())) {
-        res.setHeader(k, v);
-      }
-    });
-
-    // 正确返回二进制流（图片/JSON都兼容）
+    // 返回结果
     const arrayBuffer = await response.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
 
     res.status(response.status).send(buffer);
   } catch (err) {
-    console.error("Proxy error:", err);
-    res.status(500).json({ error: "代理失败: " + err.message });
+    console.error(err);
+    res.status(500).json({ error: "代理失败" });
   }
 }
-
