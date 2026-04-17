@@ -234,24 +234,33 @@ async function doEdit(){
   }
 }
 
-// 修复下载失效 重写稳定版
+// 已修复下载bug，全浏览器兼容
 function downloadResult(){
   if(!currentBase64){
     alert('先生成图片');
     return;
   }
-  const link = document.createElement('a');
-  link.href = currentBase64;
-  link.download = 'AI编辑图片.png';
-  link.rel = 'noopener noreferrer';
-  document.body.appendChild(link);
-  link.click();
-  // 延时移除，防止拦截
-  setTimeout(()=>{
-    document.body.removeChild(link);
-  }, 200);
+  fetch(currentBase64)
+  .then(res => res.blob())
+  .then(blob => {
+    const objUrl = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = objUrl;
+    a.download = 'AI编辑图片.png';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(objUrl);
+  })
+  .catch(() => {
+    const a = document.createElement('a');
+    a.href = currentBase64;
+    a.download = 'AI编辑图片.png';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  });
 }
 </script>
 </body>
 </html>
-
