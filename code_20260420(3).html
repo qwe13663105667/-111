@@ -1,0 +1,633 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0,user-scalable=no">
+<title>Gitee AI 图片工具 | 异步专属修复版</title>
+<style>
+*{box-sizing:border-box;font-family:system-ui,sans-serif}
+body{margin:0;padding:20px;background:#111;color:#fff}
+.container{max-width:1200px;margin:0 auto;display:grid;gap:16px}
+.card{background:#222;border-radius:12px;padding:16px}
+.flex{display:flex;gap:16px;flex-wrap:wrap}
+.col{flex:1;min-width:280px}
+input,textarea,select{width:100%;padding:10px;border-radius:8px;border:none;background:#333;color:#fff;margin-bottom:10px}
+button{width:100%;padding:10px;border-radius:8px;border:0;background:#0099ff;color:#fff;font-weight:bold;cursor:pointer;margin-top:5px}
+button:disabled{background:#666;cursor:not-allowed}
+button.danger{background:#dc3545}
+button.success{background:#28a745}
+button.warning{background:#ffc107;color:#222}
+.canvas-wrap{position:relative;width:100%;max-width:450px;background:#000;border-radius:8px;overflow:hidden;margin:0 auto}
+#imgCanvas{width:100%;height:auto}
+#maskCanvas{position:absolute;left:0;top:0;width:100%;height:100%;touch-action:auto}
+.img-preview{max-width:100%;border-radius:8px;margin-top:10px;display:block;border:2px solid #444;cursor:pointer}
+.tip{font-size:12px;color:#888;margin-top:5px}
+.check-item{display:flex;align-items:center;gap:6px;margin-bottom:10px}
+.mask-controls{display:block;margin:8px 0;}
+.param-row{display:flex;gap:10px;}
+.param-row input{flex:1;text-align:center}
+.status-box{background:#333;padding:10px;border-radius:8px;margin-top:10px;font-family:monospace;word-break:break-all;max-height:200px;overflow-y:auto}
+.status-pending{color:#ffc107}
+.status-processing{color:#17a2b8}
+.status-success{color:#28a745}
+.status-error{color:#dc3545}
+.dual-upload{display:flex;gap:10px;}
+.upload-item{flex:1;border:2px dashed #555;padding:10px;border-radius:8px;text-align:center}
+.upload-item.active{border-color:#0099ff}
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="card">
+    <h3>Gitee AI 图片工具 | 异步专属修复版</h3>
+    <input type="text" id="apiKey" placeholder="请输入你的Gitee API Key">
+    
+    <select id="apiModeSelect">
+      <option value="async" selected>异步模式 (多图ID+Style混合)</option>
+      <option value="sync">同步模式 (单图编辑/图生图)</option>
+    </select>
+    <div id="syncControls" style="display:none">
+        <select id="syncModeSelect">
+          <option value="edit_mask">图片编辑（带蒙版涂抹）</option>
+          <option value="edit_ref">参考图生图（不带蒙版）</option>
+        </select>
+        <select id="syncModelSelect">
+          <option value="Qwen-Image-Edit" selected>Qwen-Image-Edit</option>
+          <option value="HiDream-E1-Full">HiDream-E1-Full</option>
+          <option value="FLUX.1-Kontext-dev">FLUX.1-Kontext-dev（上下文感知蒙版）</option>
+        </select>
+    </div>
+    <div id="asyncControls">
+        <select id="asyncModelSelect">
+          <option value="Qwen-Image-Edit" selected>Qwen-Image-Edit (稳定版，官方推荐)</option>
+          <option value="Qwen-Image-Edit-2511">Qwen-Image-Edit-2511 (极速版)</option>
+          <option value="FLUX.1-Kontext-dev">FLUX.1-Kontext-dev (风格融合增强版)</option>
+        </select>
+        <div class="tip">
+          ✅ 支持：单ID换脸/换衣、双ID双人同框、ID+Style风格融合<br>
+          ⚠️ 提示词中人物出现顺序必须与图片上传顺序一致
+        </div>
+        <select id="secondImageType">
+          <option value="style">第二张图：风格/场景参考 (Style)</option>
+          <option value="id">第二张图：第二个人物身份 (ID)</option>
+        </select>
+    </div>
+    <div class="param-row">
+        <input type="number" id="stepsInput" value="4" min="1" max="50" placeholder="迭代步数">
+        <input type="number" id="guidanceInput" value="1" step="0.1" min="0" max="10" placeholder="引导系数">
+    </div>
+    <div class="tip" id="paramTip">官方推荐参数：Steps=4, Guidance=1</div>
+    <label class="check-item" id="sameStyleCheckWrap" style="display:none">
+      <input type="checkbox" id="sameStyleCheck">
+      <span>✅ 保持原图样貌（仅同步模式有效）</span>
+    </label>
+    <textarea id="prompt" rows="3" placeholder="请输入提示词...
+双ID示例：一男一女并肩站在海边，男生穿白T恤，女生穿白连衣裙"></textarea>
+  </div>
+  <div class="flex">
+    <div class="col card" id="syncUploadCard" style="display:none">
+      <h3>主图</h3>
+      <input type="file" id="fileInput" accept="image/*" style="background:#444">
+      <div class="mask-controls" id="maskControls">
+        <div style="display:flex;align-items:center;gap:8px;">
+          <label>笔刷厚度：</label>
+          <input type="range" id="brushSize" min="10" max="100" value="40" style="flex:1;">
+          <span id="brushSizeLabel">40</span>
+        </div>
+      </div>
+      <div class="canvas-wrap">
+        <canvas id="imgCanvas"></canvas>
+        <canvas id="maskCanvas"></canvas>
+      </div>
+      <button onclick="clearMask()">清空涂抹</button>
+      
+      <div style="margin-top:16px;">
+        <h4>参考图（仅Qwen-Image-Edit有效）</h4>
+        <input type="file" id="refFileInput" accept="image/*" style="background:#444">
+        <img id="refPreview" class="img-preview" style="display:none">
+      </div>
+    </div>
+    <div class="col card" id="asyncUploadCard">
+      <h3>多图输入</h3>
+      <div class="dual-upload">
+        <div class="upload-item" id="idUploadWrap">
+            <div><strong>图1: 第一个人物 (ID)</strong></div>
+            <div class="tip">必填，保留这张图的人物五官</div>
+            <input type="file" id="idFileInput" accept="image/*">
+            <img id="idPreview" class="img-preview" style="display:none">
+        </div>
+        <div class="upload-item" id="secondUploadWrap">
+            <div><strong id="secondImageLabel">图2: 风格/场景 (Style)</strong></div>
+            <div class="tip" id="secondImageTip">选填，参考这张图的画风/场景</div>
+            <input type="file" id="secondFileInput" accept="image/*">
+            <img id="secondPreview" class="img-preview" style="display:none">
+        </div>
+      </div>
+    </div>
+    <div class="col card">
+      <h3>生成/结果</h3>
+      <button id="generateBtn" onclick="doGenerate()">开始生成</button>
+      <button id="stopPollBtn" class="danger" style="display:none" onclick="handleCancelTask()">停止查询并取消任务</button>
+      
+      <div id="statusArea" style="display:none">
+          <strong>任务状态：</strong>
+          <div id="statusText" class="status-box status-pending">等待中...</div>
+          <a id="resultLink" href="#" target="_blank" style="display:inline-block;margin-top:8px;padding:8px;background:#28a745;color:#fff;border-radius:8px;text-decoration:none">🔗 打开结果链接</a>
+      </div>
+      <button onclick="saveToPhone()" style="background:#28a745;margin-top:8px">💾 保存图片</button>
+      <img id="result" class="img-preview" alt="生成结果">
+    </div>
+  </div>
+</div>
+<div id="lightbox" style="display:none;position:fixed;z-index:9999;left:0;top:0;width:100%;height:100%;background:rgba(0,0,0,0.9);justify-content:center;align-items:center;cursor:zoom-out;">
+  <img id="lightboxImg" style="max-width:90%;max-height:90%;object-fit:contain;">
+</div>
+<script>
+const imgCanvas = document.getElementById('imgCanvas');
+const maskCanvas = document.getElementById('maskCanvas');
+const ctx = imgCanvas.getContext('2d');
+const mctx = maskCanvas.getContext('2d');
+let currentImage = null;
+let currentIdImageBlob = null;
+let currentSecondImageBlob = null;
+let currentRefImageBlob = null;
+let isDrawing = false;
+let currentBase64 = '';
+let pollInterval = null;
+let currentTaskId = '';
+let currentApiKey = '';
+let pollAttempts = 0;
+const API_BASE = "https://ai.gitee.com/api/v1";
+const API_SYNC_EDIT = `${API_BASE}/images/edits`;
+const API_ASYNC_EDIT = `${API_BASE}/async/images/edits`;
+const API_TASK_PREFIX = `${API_BASE}/task/`;
+const apiModeSelect = document.getElementById('apiModeSelect');
+const syncControls = document.getElementById('syncControls');
+const asyncControls = document.getElementById('asyncControls');
+const syncUploadCard = document.getElementById('syncUploadCard');
+const asyncUploadCard = document.getElementById('asyncUploadCard');
+const syncModeSelect = document.getElementById('syncModeSelect');
+const sameStyleCheckWrap = document.getElementById('sameStyleCheckWrap');
+const secondImageType = document.getElementById('secondImageType');
+const secondImageLabel = document.getElementById('secondImageLabel');
+const secondImageTip = document.getElementById('secondImageTip');
+const stepsInput = document.getElementById('stepsInput');
+const guidanceInput = document.getElementById('guidanceInput');
+const syncModelSelect = document.getElementById('syncModelSelect');
+const asyncModelSelect = document.getElementById('asyncModelSelect');
+const paramTip = document.getElementById('paramTip');
+// ========== 【已改回】FLUX.1-Kontext-dev 恢复原来的默认参数 ==========
+const MODEL_PARAMS = {
+  "Qwen-Image-Edit": { steps: 8, guidance: 1.0, tip: "官方推荐参数：Steps=8, Guidance=1" },
+  "HiDream-E1-Full": { steps: 20, guidance: 5.0, tip: "HiDream最佳参数：Steps=20, Guidance=5.0" },
+  "FLUX.1-Kontext-dev": { steps: 20, guidance: 3.5, tip: "FLUX最佳参数：Steps=20, Guidance=3.5" },
+  "Qwen-Image-Edit-2511": { steps: 4, guidance: 1.0, tip: "极速版最佳参数：Steps=4, Guidance=1" },
+  "FLUX.1-dev": { steps: 25, guidance: 4.0, tip: "FLUX最佳参数：Steps=25, Guidance=4.0" },
+  "kolors": { steps: 15, guidance: 2.0, tip: "kolors最佳参数：Steps=15, Guidance=2.0" },
+  "InstantCharacter": { steps: 30, guidance: 7.5, tip: "InstantCharacter最佳参数：Steps=30, Guidance=7.5" }
+};
+
+// ========== 新增：FLUX 提示词软化函数 ==========
+function softenPromptForFlux(prompt) {
+    const nsfwKeywords = {
+        'naked': 'wearing extremely revealing artistic clothing',
+        'nude': 'anatomical art study',
+        'nsfw': 'boudoir photography, high fashion',
+        'sex': 'intimate romantic interaction',
+        'sexy': 'elegant and charming',
+        'hot': 'graceful and attractive',
+        'erotic': 'artistic and sensual'
+    };
+    
+    let finalPrompt = prompt;
+    for (const [badWord, safeWord] of Object.entries(nsfwKeywords)) {
+        const regex = new RegExp("\\b" + badWord + "\\b", "gi");
+        finalPrompt = finalPrompt.replace(regex, safeWord);
+    }
+    return finalPrompt;
+}
+
+function setDefaultParamsByModel() {
+  const mode = apiModeSelect.value;
+  let model = mode === 'sync' ? syncModelSelect.value : asyncModelSelect.value;
+  let params = MODEL_PARAMS[model] || { steps: 4, guidance: 1, tip: "默认参数：Steps=4, Guidance=1" };
+  stepsInput.value = params.steps;
+  guidanceInput.value = params.guidance;
+  paramTip.textContent = params.tip;
+}
+function updateSyncModelOptions(subMode) {
+  syncModelSelect.innerHTML = "";
+  if (subMode === "edit_mask") {
+    syncModelSelect.innerHTML = `
+      <option value="Qwen-Image-Edit" selected>Qwen-Image-Edit</option>
+      <option value="HiDream-E1-Full">HiDream-E1-Full</option>
+      <option value="FLUX.1-Kontext-dev">FLUX.1-Kontext-dev（上下文感知蒙版）</option>
+    `;
+  } else if (subMode === "edit_ref") {
+    syncModelSelect.innerHTML = `
+      <option value="FLUX.1-Kontext-dev" selected>FLUX.1-Kontext-dev</option>
+      <option value="FLUX.1-dev">FLUX.1-dev</option>
+      <option value="kolors">kolors</option>
+      <option value="InstantCharacter">InstantCharacter</option>
+    `;
+  }
+  setDefaultParamsByModel();
+}
+initApiMode(apiModeSelect.value);
+apiModeSelect.addEventListener('change', (e) => {
+  initApiMode(e.target.value);
+  setDefaultParamsByModel();
+});
+syncModeSelect.addEventListener('change', (e) => {
+  initSyncSubMode(e.target.value);
+  updateSyncModelOptions(e.target.value);
+  setDefaultParamsByModel();
+});
+secondImageType.addEventListener('change', (e) => {
+    if (e.target.value === 'id') {
+        secondImageLabel.textContent = '图2: 第二个人物 (ID)';
+        secondImageTip.textContent = '选填，保留这张图的人物五官';
+    } else {
+        secondImageLabel.textContent = '图2: 风格/场景 (Style)';
+        secondImageTip.textContent = '选填，参考这张图的画风/场景';
+    }
+});
+syncModelSelect.addEventListener('change', setDefaultParamsByModel);
+asyncModelSelect.addEventListener('change', setDefaultParamsByModel);
+function initApiMode(mode) {
+    handleCancelTask();
+    if (mode === 'sync') {
+        syncControls.style.display = 'block';
+        asyncControls.style.display = 'none';
+        syncUploadCard.style.display = 'block';
+        asyncUploadCard.style.display = 'none';
+        sameStyleCheckWrap.style.display = 'flex';
+        document.getElementById('statusArea').style.display = 'none';
+        initSyncSubMode(syncModeSelect.value);
+        updateSyncModelOptions(syncModeSelect.value);
+    } else {
+        syncControls.style.display = 'none';
+        asyncControls.style.display = 'block';
+        syncUploadCard.style.display = 'none';
+        asyncUploadCard.style.display = 'block';
+        sameStyleCheckWrap.style.display = 'none';
+    }
+    setDefaultParamsByModel();
+}
+function initSyncSubMode(mode) {
+    const maskControls = document.getElementById('maskControls');
+    const clearMaskBtn = document.getElementById('clearMaskBtn');
+    const maskCanvasEl = document.getElementById('maskCanvas');
+    if (mode === 'edit_mask') {
+        maskControls.style.display = 'block';
+        clearMaskBtn.style.display = 'block';
+        maskCanvasEl.style.display = 'block';
+    } else {
+        maskControls.style.display = 'none';
+        clearMaskBtn.style.display = 'none';
+        maskCanvasEl.style.display = 'none';
+        clearMask();
+    }
+}
+let brushSize = 40;
+mctx.lineCap = "round";
+mctx.lineJoin = "round";
+mctx.lineWidth = brushSize;
+const brushSizeInput = document.getElementById('brushSize');
+const brushSizeLabel = document.getElementById('brushSizeLabel');
+brushSizeInput.addEventListener('input', function() {
+  brushSize = parseInt(this.value);
+  mctx.lineWidth = brushSize;
+  brushSizeLabel.textContent = brushSize;
+});
+function getPos(e){
+  const r = maskCanvas.getBoundingClientRect();
+  const p = e.touches ? e.touches[0] : e;
+  return { x: (p.clientX - r.left) * maskCanvas.width / r.width, y: (p.clientY - r.top) * maskCanvas.height / r.height };
+}
+maskCanvas.addEventListener('touchstart',e=>{e.preventDefault();isDrawing=true;const p=getPos(e);mctx.beginPath();mctx.moveTo(p.x,p.y);});
+maskCanvas.addEventListener('touchmove',e=>{if(!isDrawing)return;e.preventDefault();const p=getPos(e);mctx.lineTo(p.x,p.y);mctx.strokeStyle="#fff";mctx.stroke();});
+maskCanvas.addEventListener('touchend',()=>isDrawing=false);
+maskCanvas.addEventListener('mousedown',e=>{isDrawing=true;const p=getPos(e);mctx.beginPath();mctx.moveTo(p.x,p.y);});
+maskCanvas.addEventListener('mousemove',e=>{if(!isDrawing)return;const p=getPos(e);mctx.lineTo(p.x,p.y);mctx.strokeStyle="#fff";mctx.stroke();});
+maskCanvas.addEventListener('mouseup',()=>isDrawing=false);
+maskCanvas.addEventListener('mouseleave',()=>isDrawing=false);
+function setCanvasSize(){
+  imgCanvas.width = 1024; imgCanvas.height = 1024;
+  maskCanvas.width = 1024; maskCanvas.height = 1024;
+  ctx.fillStyle='#000'; ctx.fillRect(0,0,1024,1024);
+  const img = currentImage; if (!img) return;
+  const scale = Math.min(1024/img.width,1024/img.height);
+  const w = img.width*scale; const h = img.height*scale;
+  ctx.drawImage(img,(1024-w)/2,(1024-h)/2,w,h);
+}
+function isMaskEmpty(){ return !mctx.getImageData(0,0,maskCanvas.width,maskCanvas.height).data.some(v=>v>0); }
+function clearMask(){mctx.clearRect(0,0,maskCanvas.width,maskCanvas.height);}
+document.getElementById('fileInput').addEventListener('change',e=>{
+  const f = e.target.files[0]; if(!f)return;
+  const r = new FileReader();
+  r.onload=ev=>{
+    const img = new Image();
+    img.onload=()=>{ currentImage=img; setCanvasSize(); clearMask(); };
+    img.src=ev.target.result;
+  };
+  r.readAsDataURL(f);
+});
+document.getElementById('refFileInput').addEventListener('change', e=>{
+  const f = e.target.files[0]; if(!f)return;
+  currentRefImageBlob = f;
+  const reader = new FileReader();
+  reader.onload = ev=>{
+    const prev = document.getElementById('refPreview');
+    prev.src = ev.target.result; prev.style.display='block';
+  };
+  reader.readAsDataURL(f);
+});
+document.getElementById('idFileInput').addEventListener('change', e=>{
+    const f = e.target.files[0]; if(!f)return;
+    currentIdImageBlob = f;
+    const reader = new FileReader();
+    reader.onload = ev=>{
+        const prev = document.getElementById('idPreview');
+        prev.src = ev.target.result; prev.style.display='block';
+    };
+    reader.readAsDataURL(f);
+});
+document.getElementById('secondFileInput').addEventListener('change', e=>{
+    const f = e.target.files[0]; if(!f)return;
+    currentSecondImageBlob = f;
+    const reader = new FileReader();
+    reader.onload = ev=>{
+        const prev = document.getElementById('secondPreview');
+        prev.src = ev.target.result; prev.style.display='block';
+    };
+    reader.readAsDataURL(f);
+});
+async function doGenerate() {
+    const mode = apiModeSelect.value;
+    if (mode === 'sync') {
+        await doSyncGenerate();
+    } else {
+        await doAsyncGenerate();
+    }
+}
+async function doSyncGenerate() {
+    const key = document.getElementById('apiKey').value.trim();
+    const subMode = syncModeSelect.value;
+    const model = document.getElementById('syncModelSelect').value;
+    let prompt = document.getElementById('prompt').value.trim();
+    // ✅ 修复：补回被误删的keep变量定义
+    const keep = document.getElementById('sameStyleCheck').checked;
+    if(keep) prompt += "，严格保持原人物样貌、色调、光影不变，不改变五官";
+    
+    // ========== 新增：FLUX 提示词软化 + 风控参数 ==========
+    if (model.includes('FLUX')) {
+        prompt = softenPromptForFlux(prompt);
+    }
+    
+    const btn = document.getElementById('generateBtn');
+    const resImg = document.getElementById('result');
+    if(!currentImage||!prompt||!key){alert('请上传图片、填写提示词与API Key');return;}
+    btn.disabled=true; btn.innerText='生成中...'; resImg.src=''; currentBase64='';
+    
+    try{
+        const imgBlob = await new Promise(res=>imgCanvas.toBlob(res,'image/png'));
+        const form = new FormData();
+        form.append('model', model);
+        form.append('prompt', prompt);
+        form.append('image', imgBlob, 'image.png');
+        form.append('size', '1024x1024');
+        form.append('steps', document.getElementById('stepsInput').value);
+        form.append('guidance_scale', document.getElementById('guidanceInput').value);
+        form.append('return_image_quality', '80');
+        
+        // ========== 新增：FLUX 关闭安全检测 + 负面提示词 ==========
+        if (model.includes('FLUX')) {
+            form.append('safety_checker', 'false');
+            form.append('enable_safety_checker', 'false');
+            form.append('negative_prompt', 'nsfw, nude, censored, deformed, ugly, bad anatomy, bad proportions, watermark, text, signature, extra limbs, missing limbs');
+        }
+        
+        if(subMode === 'edit_mask' && !isMaskEmpty()){
+            const maskBlob = await new Promise(res=>maskCanvas.toBlob(res,'image/png'));
+            form.append('mask', maskBlob, 'mask.png');
+        }
+        
+        if (model === 'Qwen-Image-Edit' && currentRefImageBlob) {
+            form.append('image2', currentRefImageBlob, 'reference.png');
+        }
+        
+        const res = await fetch(API_SYNC_EDIT, {
+            method:'POST', headers:{Authorization:`Bearer ${key}`}, body:form
+        });
+        const json = await res.json();
+        handleSyncResult(json, resImg, btn);
+    }catch(err){
+        alert('❌ 错误：'+err.message);
+        btn.disabled=false; btn.innerText='开始生成';
+    }
+}
+function handleSyncResult(json, resImg, btn) {
+    console.log("Sync Result:", json);
+    if (json.data?.[0]?.b64_json) {
+        currentBase64 = 'data:image/png;base64,' + json.data[0].b64_json;
+        resImg.src = currentBase64;
+        alert('✅ 生成成功！');
+    } else if (json.data?.[0]?.url) {
+        resImg.src = json.data[0].url;
+        currentBase64 = json.data[0].url;
+        alert('✅ 生成成功！');
+    } else {
+        alert('❌ 失败：' + (json.error?.message || '无返回数据'));
+    }
+    btn.disabled = false;
+    btn.innerText = '开始生成';
+}
+async function doAsyncGenerate() {
+    const key = document.getElementById('apiKey').value.trim();
+    let prompt = document.getElementById('prompt').value.trim();
+    const model = document.getElementById('asyncModelSelect').value;
+    const secondType = document.getElementById('secondImageType').value;
+    const steps = document.getElementById('stepsInput').value;
+    const guidance = document.getElementById('guidanceInput').value;
+    
+    // ========== 新增：FLUX 提示词软化 + 风控参数 ==========
+    if (model.includes('FLUX')) {
+        prompt = softenPromptForFlux(prompt);
+    }
+    
+    const btn = document.getElementById('generateBtn');
+    const statusArea = document.getElementById('statusArea');
+    const statusText = document.getElementById('statusText');
+    const resultLink = document.getElementById('resultLink');
+    
+    if(!key){alert('请输入Gitee API Key');return;}
+    if(!prompt){alert('请填写提示词');return;}
+    if(!currentIdImageBlob){alert('请至少上传第一张图（第一个人物ID）');return;}
+    
+    currentTaskId = '';
+    currentApiKey = key;
+    pollAttempts = 0;
+    btn.disabled=true; btn.innerText='提交任务中...';
+    statusArea.style.display='block';
+    statusText.className='status-box status-pending';
+    statusText.innerText = '正在提交任务到服务器...';
+    resultLink.style.display='none';
+    document.getElementById('stopPollBtn').style.display='inline-block';
+    document.getElementById('result').src='';
+    currentBase64='';
+    
+    try{
+        const form = new FormData();
+        form.append('model', model);
+        form.append('prompt', prompt);
+        form.append('task_types', 'id');
+        form.append('image', currentIdImageBlob, 'image-1-id.png');
+        
+        if (currentSecondImageBlob) {
+            form.append('task_types', secondType);
+            form.append('image', currentSecondImageBlob, `image-2-${secondType}.png`);
+        }
+        
+        form.append('steps', String(steps));
+        form.append('guidance_scale', String(guidance));
+        form.append('return_image_quality', '80');
+        
+        // ========== 新增：FLUX 关闭安全检测 + 负面提示词 ==========
+        if (model.includes('FLUX')) {
+            form.append('safety_checker', 'false');
+            form.append('enable_safety_checker', 'false');
+            form.append('negative_prompt', 'nsfw, nude, censored, deformed, ugly, bad anatomy, bad proportions, watermark, text, signature, extra limbs, missing limbs');
+        }
+        
+        const res = await fetch(API_ASYNC_EDIT, {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${key}` },
+            body: form
+        });
+        
+        const resText = await res.text();
+        console.log("异步接口完整响应：", resText);
+        let json;
+        try {
+            json = JSON.parse(resText);
+        } catch (e) {
+            throw new Error(`接口返回非JSON内容：${resText}`);
+        }
+        
+        if (json.task_id) {
+            currentTaskId = json.task_id;
+            statusText.innerText = `✅ 任务提交成功！\nTask ID: ${currentTaskId}\n\n进入排队队列，等待服务器调度...`;
+            startPolling();
+        } else {
+            throw new Error(json.error?.message || json.message || '服务器未返回任务ID');
+        }
+    } catch(err) {
+        alert('❌ 提交失败：'+err.message);
+        console.error("提交错误详情：", err);
+        btn.disabled=false; btn.innerText='开始生成';
+        document.getElementById('stopPollBtn').style.display='none';
+    }
+}
+function startPolling() {
+    const statusText = document.getElementById('statusText');
+    const btn = document.getElementById('generateBtn');
+    const resultLink = document.getElementById('resultLink');
+    const resImg = document.getElementById('result');
+    const maxAttempts = 60;
+    stopPolling();
+    pollInterval = setInterval(async () => {
+        pollAttempts++;
+        if (pollAttempts > maxAttempts) {
+            handleCancelTask();
+            statusText.innerText = "⏰ 超时：任务等待超过10分钟，已自动取消";
+            statusText.className = 'status-box status-error';
+            return;
+        }
+        try {
+            const res = await fetch(`${API_TASK_PREFIX}${currentTaskId}`, {
+                headers: { 'Authorization': `Bearer ${currentApiKey}` }
+            });
+            const json = await res.json();
+            console.log("轮询结果:", json);
+            const status = json.status || 'waiting';
+            let statusClass = 'status-pending';
+            if (status === 'processing') statusClass = 'status-processing';
+            if (status === 'success') statusClass = 'status-success';
+            if (status === 'failed' || status === 'cancelled') statusClass = 'status-error';
+            
+            statusText.className = `status-box ${statusClass}`;
+            statusText.innerText = `[查询次数: ${pollAttempts}]\n状态: ${status}\n\n${JSON.stringify(json, null, 2)}`;
+            if (status === 'success') {
+                stopPolling();
+                btn.disabled = false; btn.innerText = '开始生成';
+                document.getElementById('stopPollBtn').style.display='none';
+                if (json.output?.file_url) {
+                    resultLink.href = json.output.file_url;
+                    resultLink.style.display = 'inline-block';
+                    resImg.src = json.output.file_url;
+                    currentBase64 = json.output.file_url;
+                }
+                alert('✅ 任务执行成功！');
+            } else if (status === 'failed' || status === 'cancelled') {
+                stopPolling();
+                btn.disabled = false; btn.innerText = '开始生成';
+                document.getElementById('stopPollBtn').style.display='none';
+                alert('❌ 任务失败：' + (json.error || '未知原因'));
+            }
+        } catch (err) {
+            console.error("轮询错误:", err);
+        }
+    }, 10000);
+}
+function stopPolling() {
+    if (pollInterval) {
+        clearInterval(pollInterval);
+        pollInterval = null;
+    }
+}
+async function handleCancelTask() {
+    const btn = document.getElementById('generateBtn');
+    stopPolling();
+    if (currentTaskId && currentApiKey) {
+        try {
+            await fetch(`${API_TASK_PREFIX}${currentTaskId}/cancel`, {
+                method: 'POST',
+                headers: { 'Authorization': `Bearer ${currentApiKey}` }
+            });
+        } catch (err) {}
+    }
+    currentTaskId = '';
+    currentApiKey = '';
+    pollAttempts = 0;
+    btn.disabled = false;
+    btn.innerText = '开始生成';
+    document.getElementById('stopPollBtn').style.display='none';
+}
+async function saveToPhone(){
+  if(!currentBase64){alert('先生成图片');return;}
+  if(currentBase64.startsWith('http')){
+     alert('⚠️ 当前为网络链接，请点击图片或上方链接打开后长按保存');
+     return;
+  }
+  try{
+    const res = await fetch(currentBase64);
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = 'gitee-ai-result.png';
+    document.body.appendChild(a); a.click();
+    document.body.removeChild(a); URL.revokeObjectURL(url);
+    alert('✅ 已触发保存');
+  }catch(err){ alert('❌ 保存失败：'+err.message); }
+}
+document.getElementById('result').addEventListener('click',function(){
+  if(!this.src) return;
+  const lb=document.getElementById('lightbox');
+  const lbImg=document.getElementById('lightboxImg');
+  lbImg.src=this.src; lb.style.display='flex';
+});
+document.getElementById('lightbox').addEventListener('click',function(){ this.style.display='none'; });
+</script>
+</body>
+</html>
